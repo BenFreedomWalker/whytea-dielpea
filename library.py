@@ -114,8 +114,8 @@ def delete_video(video_id: str) -> dict | None:
     if not root.is_dir():
         return None
 
-    video = next((root / item["path"]).resolve() for item in scan_library()
-                 if item["id"] == video_id)
+    video = next(((root / item["path"]).resolve() for item in scan_library()
+                  if item["id"] == video_id), None)
     if video is None or root not in video.parents or not video.is_file():
         return None
 
