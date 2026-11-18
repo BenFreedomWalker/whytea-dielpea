@@ -105,3 +105,37 @@ def set_watched(video_id: str, watched: bool) -> bool:
     state[video_id] = {"watched": bool(watched), "watched_at": int(time.time()) if watched else None}
     save_state(state)
     return True
+
+
+def delete_video(video_id: str) -> dict | None:
+    """Delete a video and its yt-dlp sidecar files from the library."""
+    cfg = load_config()
+    root = (ROOT / str(cfg["download_dir"])).resolve()
+    if not root.is_dir():
+        return None
+
+    video = next((root / item["path"]).resolve() for item in scan_library()
+                 if item["id"] == video_id)
+    if video is None or root not in video.parents or not video.is_file():
+        return None
+
+    # yt-dlp stores metadata, thumbnails, subtitles, descriptions and temporary
+    # files beside the media file using the media filename as their prefix.
+    prefix = video.name + "."
+    removed = []
+    for candidate in video.parent.iterdir():
+        if candidate == video or candidate.name.startswith(prefix):
+            if candidate.is_file() and not candidate.is_symlink():
+                try:
+                    candidate.unlink()
+                    removed.append(str(candidate.relative_to(root)).replace("\\\\", "/"))
+                except OSError:
+                    pass
+
+    if str(video.relative_to(root)).replace("\\\\", "/") not in removed:
+        return None
+
+    state = load_state()
+    state.pop(video_id, None)
+    save_state(state)
+    return {"id": video_id, "deleted": removed}
