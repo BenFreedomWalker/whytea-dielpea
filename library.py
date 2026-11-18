@@ -121,18 +121,18 @@ def delete_video(video_id: str) -> dict | None:
 
     # yt-dlp stores metadata, thumbnails, subtitles, descriptions and temporary
     # files beside the media file using the media filename as their prefix.
-    prefix = video.name + "."
+    prefix = video.stem + "."
     removed = []
     for candidate in video.parent.iterdir():
         if candidate == video or candidate.name.startswith(prefix):
             if candidate.is_file() and not candidate.is_symlink():
                 try:
                     candidate.unlink()
-                    removed.append(str(candidate.relative_to(root)).replace("\\\\", "/"))
+                    removed.append(candidate.relative_to(root).as_posix())
                 except OSError:
                     pass
 
-    if str(video.relative_to(root)).replace("\\\\", "/") not in removed:
+    if video.relative_to(root).as_posix() not in removed:
         return None
 
     state = load_state()
