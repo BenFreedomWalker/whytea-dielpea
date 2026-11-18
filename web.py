@@ -9,9 +9,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlparse
 
-from library import ROOT, load_config, scan_library, set_watched
+from library import ROOT, delete_video, load_config, scan_library, set_watched
 
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"
 PORT = 8765
 
 HTML = r'''<!doctype html>
@@ -28,6 +28,12 @@ button{background:#292929;color:#eee;border:1px solid #444;padding:7px 11px;curs
 button:hover{background:#333}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:22px}.card{min-width:0}.card.watched{opacity:.58}
 .thumb-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#222;border-radius:5px;overflow:hidden}.thumb{display:block;width:100%;height:100%;object-fit:cover}.placeholder{display:flex;align-items:center;justify-content:center;color:#777}.duration{position:absolute;right:7px;bottom:7px;background:rgba(0,0,0,.85);color:#fff;font-size:13px;font-weight:600;line-height:1;padding:4px 6px;border-radius:3px;text-shadow:0 1px 1px #000}
 a{color:inherit;text-decoration:none}.title{font-size:16px;font-weight:600;line-height:1.3;margin-top:9px}.channel{color:#aaa;font-size:14px;margin-top:5px}.date{color:#888;font-size:13px;margin-top:4px}.badge{font-size:11px;border:1px solid #555;padding:2px 5px;margin-left:6px;color:#aaa}.empty{color:#999;padding:30px 0}
+.menu{position:relative;display:flex;justify-content:flex-end;margin-top:-36px;height:32px;z-index:2}
+.menu summary{list-style:none;cursor:pointer;color:#ddd;font-size:23px;line-height:25px;padding:0 9px;border-radius:4px;user-select:none}
+.menu summary::-webkit-details-marker{display:none}.menu[open] summary,.menu summary:hover{background:#333}
+.menu-pop{position:absolute;right:0;top:29px;min-width:145px;padding:5px;background:#252525;border:1px solid #484848;border-radius:5px;box-shadow:0 5px 18px #0009}
+.menu-pop button{display:block;width:100%;text-align:left;border:0;background:transparent;padding:9px 11px;color:#f2aaaa}
+.menu-pop button:hover{background:#3a2929}
 .player{max-width:1000px;margin:auto}.player video{width:100%;max-height:75vh;background:#000}.back{display:inline-block;margin-bottom:14px;color:#aaa}.watch-title{font-size:21px;margin:12px 0 5px}.watch-meta{color:#999;margin-bottom:15px}.actions{display:flex;gap:8px;margin-bottom:25px}
 @media(max-width:650px){body{margin-top:18px}.grid{grid-template-columns:1fr}}
 </style>
@@ -72,6 +78,14 @@ function render(){
 }
 async function load(){let r=await fetch('/api/videos');videos=await r.json();render();}
 async function mark(id,watched){await fetch('/api/watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,watched})});await load();if(location.pathname.startsWith('/watch/'))render();}
+async function deleteVideo(id){
+ const v=videos.find(x=>x.id===id);
+ if(!v||!confirm('Permanently delete "'+v.title+'" and all associated files? This cannot be undone.'))return;
+ const response=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+ const result=await response.json().catch(()=>({}));
+ if(!response.ok){alert(result.error||'Could not delete this video.');return;}
+ if(location.pathname.startsWith('/watch/'))home();else await load();
+}
 window.onpopstate=render;load();
 </script>
 </body></html>'''
