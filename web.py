@@ -47,7 +47,7 @@ function videoUrl(v){return '/video/'+encodeURIComponent(v.path);}
 function thumbUrl(v){return v.thumbnail?'/thumb/'+encodeURIComponent(v.thumbnail):null;}
 function views(n){if(n===null||n===undefined||n==='')return '';n=Number(n);if(!Number.isFinite(n))return '';return `${n.toLocaleString()} views`;}
 function duration(s){if(!s)return '';s=Number(s);if(!Number.isFinite(s))return '';let h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.floor(s%60);return h?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`;}
-function thumb(v){return `<div class="thumb-wrap">${v.thumbnail?`<img class="thumb" src="${thumbUrl(v)}" loading="lazy" alt="">`:'<div class="thumb placeholder">No thumbnail</div>'}${duration(v.duration)?`<span class="duration">${duration(v.duration)}</span>`:''}</div>`;}
+function thumb(v){return `<div class="thumb-wrap">${v.thumbnail?`<img class="thumb" src="${thumbUrl(v)}" loading="eager" decoding="async" alt="">`:'<div class="thumb placeholder">No thumbnail</div>'}${duration(v.duration)?`<span class="duration">${duration(v.duration)}</span>`:''}</div>`;}
 function home(){history.pushState({},'', '/');render();}
 function openVideo(id){history.pushState({},'', '/watch/'+encodeURIComponent(id));render();}
 function render(){
@@ -81,16 +81,29 @@ async function mark(id,watched){await fetch('/api/watch',{method:'POST',headers:
 async function deleteVideo(id){
  const v=videos.find(x=>x.id===id);
  if(!v||!confirm('Permanently delete "'+v.title+'" and all associated files? This cannot be undone.'))return;
- const response=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
- const result=await response.json().catch(()=>({}));
- if(!response.ok){alert(result.error||'Could not delete this video.');return;}
- if(location.pathname.startsWith('/watch/'))home();else await load();
+ // Remove it from the page immediately; do not wait for the library rescan.
+ videos=videos.filter(x=>x.id!==id);
+ document.querySelectorAll('.menu[open]').forEach(menu=>menu.removeAttribute('open'));
+ if(location.pathname.startsWith('/watch/'))home();else render();
+ try{
+  const response=await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok){alert(result.error||'Could not delete this video.');await load();}
+ }catch(error){alert('Could not reach the library server. The video may still be on disk.');await load();}
 }
+document.addEventListener('click',event=>{
+ if(!event.target.closest('.menu'))document.querySelectorAll('.menu[open]').forEach(menu=>menu.removeAttribute('open'));
+});
+document.addEventListener('keydown',event=>{
+ if(event.key==='Escape')document.querySelectorAll('.menu[open]').forEach(menu=>menu.removeAttribute('open'));
+});
 window.onpopstate=render;load();
 </script>
 </body></html>'''
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt, *args): print(fmt % args)
     def send_json(self, data, status=200):
         raw=json.dumps(data).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
@@ -133,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             status=HTTPStatus.PARTIAL_CONTENT
         else:status=HTTPStatus.OK
         length=end-start+1;mime=mimetypes.guess_type(target.name)[0] or 'application/octet-stream'
-        self.send_response(status);self.send_header('Content-Type',mime);self.send_header('Accept-Ranges','bytes');self.send_header('Content-Length',str(length))
+        self.send_response(status);self.send_header('Content-Type',mime);self.send_header('Accept-Ranges','bytes');self.send_header('Content-Length',str(length));self.send_header('Cache-Control','public, max-age=86400' if kind=='thumb' else 'no-cache')
         if status==HTTPStatus.PARTIAL_CONTENT:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
         self.end_headers()
         with target.open('rb') as f:
