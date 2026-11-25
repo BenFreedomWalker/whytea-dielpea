@@ -53,8 +53,12 @@ def _safe_proxy(proxy: str | None) -> str | None:
 
 def _base_ytdlp_args(proxy: str | None = None) -> list[str]:
     cfg = load_config()
+    try:
+        ytdlp = find_ytdlp()
+    except SystemExit as exc:
+        raise RuntimeError(str(exc))
     args = [
-        find_ytdlp(),
+        ytdlp,
         "--no-warnings",
         "--ignore-errors",
         "--extractor-args", "youtube:player_js_variant=tv",
@@ -178,7 +182,7 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
             JOBS[job_id]["returncode"] = code
             JOBS[job_id]["output"] = tail[-20:]
             JOBS[job_id]["finished_at"] = time.time()
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "failed"
             JOBS[job_id]["error"] = str(exc)
