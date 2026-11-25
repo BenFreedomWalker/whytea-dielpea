@@ -72,6 +72,31 @@ def _base_ytdlp_args(proxy: str | None = None) -> list[str]:
     return args
 
 
+def fetch_thumbnail(video_id: str, proxy: str | None = None) -> tuple[bytes, str]:
+    video_id = str(video_id).strip()
+    if not ID_RE.fullmatch(video_id):
+        raise ValueError("Invalid YouTube video ID.")
+    proxy = _safe_proxy(proxy)
+    try:
+        from yt_dlp import YoutubeDL
+        from yt_dlp.networking import Request
+    except ImportError as exc:
+        raise RuntimeError("The yt-dlp Python package is required to proxy thumbnails.") from exc
+    url = "https://i.ytimg.com/vi/" + video_id + "/hqdefault.jpg"
+    with YoutubeDL({"quiet": True, "no_warnings": True, "proxy": proxy}) as ydl:
+        response = ydl.urlopen(Request(url))
+        try:
+            content_type = response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0]
+            if not content_type.startswith("image/"):
+                raise RuntimeError("YouTube did not return an image.")
+            data = response.read(4 * 1024 * 1024 + 1)
+            if len(data) > 4 * 1024 * 1024:
+                raise RuntimeError("Thumbnail is unexpectedly large.")
+            return data, content_type
+        finally:
+            response.close()
+
+
 def search_videos(query: str, limit: int = 20, proxy: str | None = None) -> list[dict]:
     query = str(query).strip()
     if not query:
