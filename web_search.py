@@ -146,7 +146,7 @@ def search_videos(query: str, limit: int = 10, proxy: str | None = None, offset:
     offset = max(0, min(int(offset), 500))
     proxy = _safe_proxy(proxy)
     end = offset + limit
-    command = _base_ytdlp_args(proxy) + ["--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-start", str(offset + 1), "--playlist-end", str(end), "ytsearch" + str(end) + ":" + query]
+    command = _base_ytdlp_args(proxy) + ["--newline", "--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-start", str(offset + 1), "--playlist-end", str(end), "ytsearch" + str(end) + ":" + query]
     _set_search_progress(progress_key, "[whytea] Starting yt-dlp search...")
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
