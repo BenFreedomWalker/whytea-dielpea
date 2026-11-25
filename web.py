@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from pathlib import Path
 
 from library import ROOT, delete_video, load_config, scan_library, set_watched
-from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download
+from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download, get_search_progress
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -88,22 +88,23 @@ function renderSearchView(app){
  const nav='<div class="nav"><button title="Library" onclick="view=\'library\';render()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h5v13H4zM10 4h5v14.5h-5zM16 6h4v12.5h-4zM3 20.5h18"/></svg></button><button class="active" title="YouTube search" onclick="view=\'search\';render()"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></button><button title="Blocked content" onclick="showBlocked()"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg></button><button title="Settings" onclick="showSettings()"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M19 13.5a7.5 7.5 0 0 0 0-3l1.4-1.1-1.8-3.1-1.7.6a7.5 7.5 0 0 0-2.6-1.5L14 3.5h-4l-.3 1.9a7.5 7.5 0 0 0-2.6 1.5l-1.7-.6-1.8 3.1L5 10.5a7.5 7.5 0 0 0 0 3l-1.4 1.1 1.8 3.1 1.7-.6a7.5 7.5 0 0 0 2.6 1.5l.3 1.9h4l.3-1.9a7.5 7.5 0 0 0 2.6-1.5l1.7.6 1.8-3.1z"/></svg></button></div>';
  const cards=searchResults.map(v=>{const job=jobFor(v.id);const thumb='<div class="search-thumb-wrap"><img class="search-thumb" src="/ytthumb/'+encodeURIComponent(v.id)+'?proxy='+encodeURIComponent(searchProxyEnabled()?searchProxy:'')+'&url='+encodeURIComponent(v.thumbnail||'')+'" loading="lazy" decoding="async" alt="" onerror="this.style.display=\'none\'"></div>';return '<article class="search-card">'+thumb+'<div class="search-info"><div class="title">'+esc(v.title)+'</div><div class="channel">'+esc(v.channel)+'</div><div class="date">'+(v.duration?esc(duration(v.duration))+' · ':'')+esc(views(v.view_count))+'</div>'+(job?'<div class="status '+esc(job.status)+'">Download: '+esc(job.status)+(job.error?' — '+esc(job.error):'')+'</div>'+(job.status==='running'||job.status==='queued'?'<button onclick="cancelDownload(\''+esc(job.job_id)+'\')" style="margin-top:7px;color:#f2aaaa">Cancel download</button>':'')+(job.status==='running'?'<div class="progress-track"><div class="progress-fill" style="width:'+Math.max(0,Math.min(100,Number(job.progress)||0))+'%"></div></div><div class="progress-label">'+(Number(job.progress)||0).toFixed(1)+'%</div>':''):'')+'<div class="search-actions"><button onclick="startDownload(\''+esc(v.id)+'\')">Download</button><a href="'+esc(v.url)+'" target="_blank" rel="noopener noreferrer"><button>Open YouTube</button></a></div></div>'+searchMenu(v)+'</article>';}).join('');
 
- app.innerHTML=nav+'<h1>YouTube search</h1><div class="sub">Find videos, download them, or block unwanted videos and channels.</div><div class="toolbar search-toolbar"><input id="search-query" type="search" placeholder="Search YouTube..." value="'+esc(searchTerm)+'" onkeydown="if(event.key===\'Enter\')searchVideos()"><label class="proxy-control"><input id="proxy-enabled" type="checkbox" '+(proxyEnabled?'checked':'')+' onchange="searchProxy=document.getElementById(&quot;search-proxy&quot;).value.trim()||searchProxy;proxyEnabled=this.checked;render()"> Use proxy</label><input id="search-proxy" type="text" placeholder="SOCKS5 proxy" value="'+esc(searchProxy)+'" '+(proxyEnabled?'':'disabled')+' style="max-width:220px"><button onclick="searchVideos()" '+(searchLoading?'disabled':'')+'>'+(searchLoading?'Searching…':'Search')+'</button></div>'+(searchError?'<div class="empty">'+esc(searchError)+'</div>':'')+(searchLoading?'<div class="empty">Searching YouTube…</div>':'')+'<div class="sub">'+(searchResults.length?searchResults.length+' results':'')+'</div><div class="search-results">'+(cards||(!searchLoading?'<div class="empty">Enter a search term to find videos.</div>':''))+'</div>';
+ app.innerHTML=nav+'<h1>YouTube search</h1><div class="sub">Find videos, download them, or block unwanted videos and channels.</div><div class="toolbar search-toolbar"><input id="search-query" type="search" placeholder="Search YouTube..." value="'+esc(searchTerm)+'" onkeydown="if(event.key===\'Enter\')searchVideos()"><label class="proxy-control"><input id="proxy-enabled" type="checkbox" '+(proxyEnabled?'checked':'')+' onchange="searchProxy=document.getElementById(&quot;search-proxy&quot;).value.trim()||searchProxy;proxyEnabled=this.checked;render()"> Use proxy</label><input id="search-proxy" type="text" placeholder="SOCKS5 proxy" value="'+esc(searchProxy)+'" '+(proxyEnabled?'':'disabled')+' style="max-width:220px"><button onclick="searchVideos()" '+(searchLoading?'disabled':'')+'>'+(searchLoading?'Searching…':'Search')+'</button></div>'+(searchError?'<div class="empty">'+esc(searchError)+'</div>':'')+(searchLoading?'<div class="empty search-live-log" id="search-live-log">'+(searchProgressLines.length?searchProgressLines.map(x=>'<div>'+esc(x)+'</div>').join(''):'Starting search…')+'</div>':'')+'<div class="sub">'+(searchResults.length?searchResults.length+' results':'')+'</div><div class="search-results">'+(cards||(!searchLoading?'<div class="empty">Enter a search term to find videos.</div>':''))+'</div>';
  if(hasMoreResults){const more=document.createElement('button');more.className='more-results';more.textContent=loadingMore?'Loading…':'Load 5 more';more.disabled=loadingMore;more.onclick=loadMoreResults;app.appendChild(more);}
 }
+async function pollSearchProgress(key){try{const r=await fetch('/api/search-progress?key='+encodeURIComponent(key));if(r.ok){const d=await r.json();searchProgressLines=d.lines||[];const box=document.getElementById('search-live-log');if(box){box.innerHTML=searchProgressLines.map(x=>'<div>'+esc(x)+'</div>').join('');box.scrollTop=box.scrollHeight;}}}catch(e){}}
 async function searchVideos(){
  const queryInput=document.getElementById('search-query');searchTerm=queryInput?queryInput.value:searchTerm;
  const proxyInput=document.getElementById('search-proxy');if(proxyInput)searchProxy=proxyInput.value.trim();
  const proxyToggle=document.getElementById('proxy-enabled');if(proxyToggle)proxyEnabled=proxyToggle.checked;
  if(!searchTerm.trim()){searchError='Enter a search query.';render();return;}
- searchLoading=true;searchError='';searchResults=[];searchOffset=0;hasMoreResults=false;render();
+ searchLoading=true;searchError='';searchResults=[];searchOffset=0;hasMoreResults=false;searchProgressLines=[];searchProgressKey=Math.random().toString(36).slice(2,14);render();const progressKey=searchProgressKey;const progressTimer=setInterval(()=>pollSearchProgress(progressKey),700);
  try{
-  const params=new URLSearchParams({q:searchTerm,limit:'10',offset:'0',proxy:proxyEnabled?searchProxy:''});
+  const params=new URLSearchParams({q:searchTerm,limit:'10',offset:'0',proxy:proxyEnabled?searchProxy:'',progress:progressKey});
   const response=await fetch('/api/search?'+params.toString());const data=await response.json();
   if(!response.ok)throw new Error(data.error||'Search failed.');
   searchResults=data.results||[];searchOffset=searchResults.length;hasMoreResults=!!data.has_more;
  }catch(error){searchError=error.message;searchResults=[];}
- searchLoading=false;await refreshDownloads();render();
+ clearInterval(progressTimer);await pollSearchProgress(progressKey);searchLoading=false;await refreshDownloads();render();
 }
 async function loadMoreResults(){if(loadingMore||!hasMoreResults)return;loadingMore=true;render();try{const params=new URLSearchParams({q:searchTerm,limit:'5',offset:String(searchOffset),proxy:proxyEnabled?searchProxy:''});const r=await fetch('/api/search?'+params);const data=await r.json();if(!r.ok)throw new Error(data.error||'Could not load more results.');const seen=new Set(searchResults.map(v=>v.id));const next=(data.results||[]).filter(v=>!seen.has(v.id));searchResults.push(...next);searchOffset+=next.length;hasMoreResults=!!data.has_more&&next.length>0;}catch(e){searchError=e.message;}loadingMore=false;render();}
 async function blockItem(kind,id,name){
@@ -207,10 +208,12 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"Thumbnail fetch failed for {video_id}: {exc}")
                 self.send_error(502, "Thumbnail fetch failed")
             return
+        if parsed.path=='/api/search-progress':
+            params=parse_qs(parsed.query);key=params.get('key',[''])[0];self.send_json(get_search_progress(key));return
         if parsed.path=='/api/search':
             params=parse_qs(parsed.query);query=params.get('q',[''])[0];proxy=params.get('proxy',[''])[0]
             try:
-                limit=max(1,min(int(params.get('limit',['10'])[0]),50));offset=max(0,int(params.get('offset',['0'])[0]));results=search_videos(query,limit,proxy,offset);self.send_json({'results':results,'has_more':len(results)==limit})
+                limit=max(1,min(int(params.get('limit',['10'])[0]),50));offset=max(0,int(params.get('offset',['0'])[0]));key=params.get('progress',[''])[0];results=search_videos(query,limit,proxy,offset,key);self.send_json({'results':results,'has_more':len(results)==limit})
             except (ValueError,RuntimeError,TimeoutError) as exc:self.send_json({'error':str(exc)},400)
             return
         if parsed.path.startswith('/video/'): self.serve_file(unquote(parsed.path[7:]),'video');return
