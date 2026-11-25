@@ -253,7 +253,11 @@ def extract_youtube_page(url: str, tab: str = "videos", limit: int = 30, proxy: 
     proxy = _safe_proxy(proxy)
     command = _base_ytdlp_args(proxy) + ["--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-start", str(offset + 1), "--playlist-end", str(offset + limit)]
     if tab == "about":
-        command.remove("--flat-playlist"); command.remove("--playlist-end"); command.remove(str(limit))
+        command.remove("--flat-playlist")
+        command.remove("--playlist-start")
+        command.remove("--playlist-end")
+        command.remove(str(offset + 1))
+        command.remove(str(offset + limit))
     command.append(url)
     try:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
@@ -416,6 +420,7 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
             if job_id in JOBS:
                 JOBS[job_id]["process"] = None
                 JOBS[job_id]["thumbnail_process"] = None
+        _persist_jobs()
 
 def cancel_download(job_id: str) -> dict:
     if not re.fullmatch(r"[a-f0-9]{12}", str(job_id)):
@@ -474,6 +479,7 @@ def _run_batch_download(job_id: str, source_url: str, source_type: str, proxy: s
     finally:
         with JOBS_LOCK:
             if job_id in JOBS: JOBS[job_id]["process"]=None
+        _persist_jobs()
 
 QUEUE_LOCK=threading.Lock()
 QUEUE_ACTIVE=False
@@ -505,6 +511,9 @@ def _ensure_queue():
         if not QUEUE_ACTIVE:
             QUEUE_ACTIVE=True
             threading.Thread(target=_queue_loop,daemon=True).start()
+
+# Resume pending jobs restored from the previous application session.
+_ensure_queue()
 
 def start_batch_download(url: str, source_type: str="playlist", proxy: str | None=None) -> dict:
     url=_youtube_url(url)
