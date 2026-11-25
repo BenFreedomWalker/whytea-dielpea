@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import subprocess
 import threading
 import time
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -73,28 +75,55 @@ def _base_ytdlp_args(proxy: str | None = None) -> list[str]:
 
 
 def fetch_thumbnail(video_id: str, proxy: str | None = None) -> tuple[bytes, str]:
+    """Fetch a YouTube thumbnail through the configured yt-dlp executable.
+
+    Use the executable rather than importing yt_dlp: Whytea supports setups
+    where yt-dlp is installed as a standalone executable or Python script.
+    """
     video_id = str(video_id).strip()
     if not ID_RE.fullmatch(video_id):
         raise ValueError("Invalid YouTube video ID.")
     proxy = _safe_proxy(proxy)
+    cfg = load_config()
     try:
-        from yt_dlp import YoutubeDL
-        from yt_dlp.networking import Request
-    except ImportError as exc:
-        raise RuntimeError("The yt-dlp Python package is required to proxy thumbnails.") from exc
-    url = "https://i.ytimg.com/vi/" + video_id + "/hqdefault.jpg"
-    with YoutubeDL({"quiet": True, "no_warnings": True, "proxy": proxy}) as ydl:
-        response = ydl.urlopen(Request(url))
+        ytdlp = find_ytdlp()
+    except SystemExit as exc:
+        raise RuntimeError(str(exc))
+    with tempfile.TemporaryDirectory(prefix="whytea-thumb-") as temp_dir:
+        output_template = str(Path(temp_dir) / "%(id)s.%(ext)s")
+        command = [
+            ytdlp, "--no-warnings", "--skip-download", "--write-thumbnail",
+            "--no-playlist", "--output", output_template,
+            "--extractor-args", "youtube:player_js_variant=tv",
+            "--remote-components", "ejs:npm",
+        ]
+        browser = str(cfg.get("cookies_from_browser", "")).strip()
+        if browser:
+            command += ["--cookies-from-browser", browser]
+        if proxy:
+            command += ["--proxy", proxy]
+        command.append("https://www.youtube.com/watch?v=" + video_id)
         try:
-            content_type = response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0]
-            if not content_type.startswith("image/"):
-                raise RuntimeError("YouTube did not return an image.")
-            data = response.read(4 * 1024 * 1024 + 1)
-            if len(data) > 4 * 1024 * 1024:
-                raise RuntimeError("Thumbnail is unexpectedly large.")
-            return data, content_type
-        finally:
-            response.close()
+            result = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=45,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Thumbnail request timed out.")
+        except OSError as exc:
+            raise RuntimeError("Could not start yt-dlp for thumbnail: " + str(exc))
+        files = list(Path(temp_dir).glob(video_id + ".*"))
+        if result.returncode != 0 or not files:
+            detail = (result.stderr or result.stdout or "yt-dlp did not produce a thumbnail").strip()
+            raise RuntimeError("Thumbnail download failed: " + detail[-1200:])
+        image_path = files[0]
+        content_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
+        if not content_type.startswith("image/"):
+            raise RuntimeError("yt-dlp returned a non-image thumbnail.")
+        data = image_path.read_bytes()
+        if len(data) > 4 * 1024 * 1024:
+            raise RuntimeError("Thumbnail is unexpectedly large.")
+        return data, content_type
 
 
 def search_videos(query: str, limit: int = 20, proxy: str | None = None) -> list[dict]:
