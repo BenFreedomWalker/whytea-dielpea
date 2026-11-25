@@ -91,7 +91,7 @@ def build_command(
         str(ARCHIVE_PATH),
 
         "--extractor-args",
-        "youtube:player_client=web_embedded",
+        "youtube:player_js_variant=tv",
 
         "--format",
         format_override or "398+bestaudio/398",
