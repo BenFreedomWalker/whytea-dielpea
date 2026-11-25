@@ -151,7 +151,7 @@ document.addEventListener('click',event=>{
 document.addEventListener('keydown',event=>{
  if(event.key==='Escape')document.querySelectorAll('.menu[open]').forEach(menu=>menu.removeAttribute('open'));
 });
-window.onpopstate=render;load();window.setInterval(async()=>{if(view!=='search')return;const active=await refreshDownloads();if(active&&document.activeElement?.id!=='search-query'&&document.activeElement?.id!=='search-proxy')render();},4000);
+window.onpopstate=render;load();window.setInterval(async()=>{if(view!=='search'||!downloadJobs.some(job=>job.status==='queued'||job.status==='running'))return;await refreshDownloads();if(document.activeElement?.id!=='search-query'&&document.activeElement?.id!=='search-proxy')render();},4000);
 </script>
 </body></html>'''
 
