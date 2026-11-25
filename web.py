@@ -271,7 +271,7 @@ def read_config_file():
 
 def write_config_file(data):
     path=ROOT/'config.json';tmp=path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(data,ensure_ascii=False,indent=4)+'\\n',encoding='utf-8');tmp.replace(path)
+    tmp.write_text(json.dumps(data,ensure_ascii=False,indent=4)+'\n',encoding='utf-8');tmp.replace(path)
 
 def public_settings():
     cfg=load_config();return {'proxy':cfg.get('proxy','socks5://127.0.0.1:10808'),'use_proxy':cfg.get('use_proxy',True),'cookies_from_browser':cfg.get('cookies_from_browser','firefox'),'no_shorts':cfg.get('no_shorts',True)}
