@@ -541,7 +541,7 @@ def start_download(video_id: str, proxy: str | None = None) -> dict:
     _append_log(job_id,"[queue] Added video download: "+video_id)
     _persist_jobs()
     _ensure_queue()
-    return {k:v for k,v in job.items() if k not in {"process","thumbnail_process"}
+    return {k:v for k,v in job.items() if k not in {"process","thumbnail_process"}}
 
 def move_download(job_id: str, direction: str) -> list[dict]:
     if direction not in {"up", "down"}:
