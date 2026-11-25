@@ -95,7 +95,7 @@ def build_command(
         "youtube:player_js_variant=tv",
 
         "--format",
-        format_override or "398+bestaudio/398",
+        format_override or str(cfg.get("format_selector") or "398+bestaudio/398"),
 
         "--output",
         output,
