@@ -255,26 +255,18 @@ def _run_thumbnail_worker(job_id: str, video_id: str, proxy: str | None, cfg: di
 
 
 def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
+    process = None
     try:
         cfg = load_config()
-        command = build_command(
-            find_ytdlp(),
-            "https://www.youtube.com/watch?v=" + video_id,
-            cfg,
-            source_type="video",
-            proxy=proxy,
-            include_thumbnail=False,
-        )
-        thumb_thread = threading.Thread(target=_run_thumbnail_worker, args=(job_id, video_id, proxy, cfg), daemon=True)
-        thumb_thread.start()
+        command = build_command(find_ytdlp(), "https://www.youtube.com/watch?v=" + video_id, cfg, source_type="video", proxy=proxy, include_thumbnail=False)
         command.insert(-1, "--newline")
         with JOBS_LOCK:
+            if JOBS[job_id].get("cancel_requested"):
+                return
             JOBS[job_id]["status"] = "running"
             JOBS[job_id]["started_at"] = time.time()
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace",
-        )
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+            JOBS[job_id]["process"] = process
         tail = []
         assert process.stdout is not None
         for line in process.stdout:
@@ -289,20 +281,42 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
                     tail = tail[-35:]
                     JOBS[job_id]["output"] = tail[-12:]
         code = process.wait()
-        thumb_thread.join(timeout=185)
         with JOBS_LOCK:
-            JOBS[job_id]["status"] = "completed" if code == 0 else "failed"
+            cancelled = JOBS[job_id].get("cancel_requested", False)
+            JOBS[job_id]["status"] = "cancelled" if cancelled else ("completed" if code == 0 else "failed")
             JOBS[job_id]["returncode"] = code
             JOBS[job_id]["output"] = tail[-20:]
             JOBS[job_id]["finished_at"] = time.time()
     except (Exception, SystemExit) as exc:
         with JOBS_LOCK:
-            JOBS[job_id]["status"] = "failed"
+            cancelled = JOBS.get(job_id, {}).get("cancel_requested", False)
+            JOBS[job_id]["status"] = "cancelled" if cancelled else "failed"
             JOBS[job_id]["error"] = str(exc)
             JOBS[job_id]["finished_at"] = time.time()
         _append_log(job_id, "[error] " + str(exc))
+    finally:
+        with JOBS_LOCK:
+            if job_id in JOBS:
+                JOBS[job_id]["process"] = None
 
-
+def cancel_download(job_id: str) -> dict:
+    if not re.fullmatch(r"[a-f0-9]{12}", str(job_id)):
+        raise ValueError("Invalid download job ID.")
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise ValueError("Download job not found.")
+        if job["status"] not in {"queued", "running"}:
+            return {k: v for k, v in job.items() if k != "process"}
+        job["cancel_requested"] = True
+        job["status"] = "cancelled"
+        job["finished_at"] = time.time()
+        process = job.get("process")
+    if process is not None and process.poll() is None:
+        process.terminate()
+    _append_log(job_id, "[cancel] Cancellation requested by user")
+    with JOBS_LOCK:
+        return {k: v for k, v in JOBS[job_id].items() if k != "process"}
 def start_download(video_id: str, proxy: str | None = None) -> dict:
     video_id = str(video_id).strip()
     if not ID_RE.fullmatch(video_id):
@@ -315,7 +329,7 @@ def start_download(video_id: str, proxy: str | None = None) -> dict:
         job_id = uuid.uuid4().hex[:12]
         job = {
             "job_id": job_id, "video_id": video_id, "status": "queued",
-            "output": [], "progress": 0.0, "created_at": time.time(),
+            "output": [], "progress": 0.0, "created_at": time.time(), "process": None, "cancel_requested": False,
         }
         JOBS[job_id] = job
     thread = threading.Thread(target=_run_download, args=(job_id, video_id, proxy), daemon=True)
@@ -325,4 +339,4 @@ def start_download(video_id: str, proxy: str | None = None) -> dict:
 
 def get_downloads() -> list[dict]:
     with JOBS_LOCK:
-        return [dict(job) for job in sorted(JOBS.values(), key=lambda x: x["created_at"], reverse=True)]
+        return [{k: v for k, v in job.items() if k != "process"} for job in sorted(JOBS.values(), key=lambda x: x["created_at"], reverse=True)]
