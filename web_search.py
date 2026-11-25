@@ -254,11 +254,45 @@ def _run_thumbnail_worker(job_id: str, video_id: str, proxy: str | None, cfg: di
         _append_log(job_id, "[thumbnail] " + str(exc))
 
 
+def _run_thumbnail_worker(job_id: str, video_id: str, proxy: str | None, cfg: dict) -> None:
+    process = None
+    try:
+        ytdlp = find_ytdlp()
+        download_dir = ROOT / str(cfg["download_dir"])
+        output = str(download_dir / "%(uploader)s" / "%(upload_date)s - %(title)s [%(id)s].%(ext)s")
+        command = [ytdlp, "--no-warnings", "--no-playlist", "--skip-download", "--write-thumbnail", "--convert-thumbnails", "jpg", "--output", output, "--extractor-args", "youtube:player_js_variant=tv", "--remote-components", "ejs:npm"]
+        if proxy:
+            command += ["--proxy", proxy]
+        browser = str(cfg.get("cookies_from_browser", "")).strip()
+        if browser:
+            command += ["--cookies-from-browser", browser]
+        command.append("https://www.youtube.com/watch?v=" + video_id)
+        with JOBS_LOCK:
+            if JOBS[job_id].get("cancel_requested"):
+                return
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+            JOBS[job_id]["thumbnail_process"] = process
+        _append_log(job_id, "[thumbnail] Starting separate thumbnail worker")
+        assert process.stdout is not None
+        for line in process.stdout:
+            if line.strip():
+                _append_log(job_id, "[thumbnail] " + line.rstrip())
+        code = process.wait()
+        if code:
+            _append_log(job_id, "[thumbnail] Worker exited with code " + str(code))
+    except Exception as exc:
+        _append_log(job_id, "[thumbnail] " + str(exc))
+    finally:
+        with JOBS_LOCK:
+            if JOBS.get(job_id, {}).get("thumbnail_process") is process:
+                JOBS[job_id]["thumbnail_process"] = None
 def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
     process = None
     try:
         cfg = load_config()
         command = build_command(find_ytdlp(), "https://www.youtube.com/watch?v=" + video_id, cfg, source_type="video", proxy=proxy, include_thumbnail=False)
+        thumb_thread = threading.Thread(target=_run_thumbnail_worker, args=(job_id, video_id, proxy, cfg), daemon=True)
+        thumb_thread.start()
         command.insert(-1, "--newline")
         with JOBS_LOCK:
             if JOBS[job_id].get("cancel_requested"):
@@ -281,6 +315,7 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
                     tail = tail[-35:]
                     JOBS[job_id]["output"] = tail[-12:]
         code = process.wait()
+        thumb_thread.join(timeout=185)
         with JOBS_LOCK:
             cancelled = JOBS[job_id].get("cancel_requested", False)
             JOBS[job_id]["status"] = "cancelled" if cancelled else ("completed" if code == 0 else "failed")
@@ -298,6 +333,7 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
         with JOBS_LOCK:
             if job_id in JOBS:
                 JOBS[job_id]["process"] = None
+                JOBS[job_id]["thumbnail_process"] = None
 
 def cancel_download(job_id: str) -> dict:
     if not re.fullmatch(r"[a-f0-9]{12}", str(job_id)):
@@ -307,13 +343,14 @@ def cancel_download(job_id: str) -> dict:
         if not job:
             raise ValueError("Download job not found.")
         if job["status"] not in {"queued", "running"}:
-            return {k: v for k, v in job.items() if k != "process"}
+            return {k: v for k, v in job.items() if k not in {"process", "thumbnail_process"}}
         job["cancel_requested"] = True
         job["status"] = "cancelled"
         job["finished_at"] = time.time()
-        process = job.get("process")
-    if process is not None and process.poll() is None:
-        process.terminate()
+        processes = [job.get("process"), job.get("thumbnail_process")]
+    for process in processes:
+        if process is not None and process.poll() is None:
+            process.terminate()
     _append_log(job_id, "[cancel] Cancellation requested by user")
     with JOBS_LOCK:
         return {k: v for k, v in JOBS[job_id].items() if k != "process"}
@@ -329,7 +366,7 @@ def start_download(video_id: str, proxy: str | None = None) -> dict:
         job_id = uuid.uuid4().hex[:12]
         job = {
             "job_id": job_id, "video_id": video_id, "status": "queued",
-            "output": [], "progress": 0.0, "created_at": time.time(), "process": None, "cancel_requested": False,
+            "output": [], "progress": 0.0, "created_at": time.time(), "process": None, "thumbnail_process": None, "cancel_requested": False,
         }
         JOBS[job_id] = job
     thread = threading.Thread(target=_run_download, args=(job_id, video_id, proxy), daemon=True)
