@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from pathlib import Path
 
 from library import ROOT, delete_video, load_config, scan_library, set_watched
-from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download, get_search_progress
+from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download, get_search_progress, extract_youtube_page, start_batch_download
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -214,7 +214,7 @@ document.addEventListener('click',event=>{
 document.addEventListener('keydown',event=>{
  if(event.key==='Escape')document.querySelectorAll('.menu[open]').forEach(menu=>menu.removeAttribute('open'));
 });
-window.onpopstate=render;loadSettingsDefaults();load();window.setInterval(async()=>{if(view!=='search'||!downloadJobs.some(job=>job.status==='queued'||job.status==='running'))return;await refreshDownloads();if(document.activeElement?.id!=='search-query'&&document.activeElement?.id!=='search-proxy')render();},4000);
+window.onpopstate=render;loadSettingsDefaults();load();window.setInterval(async()=>{if(!['search','queue'].includes(view)||!downloadJobs.some(job=>job.status==='queued'||job.status==='running'))return;await refreshDownloads();if(document.activeElement?.id!=='search-query'&&document.activeElement?.id!=='search-proxy')render();},4000);
 </script>
 </body></html>'''
 
