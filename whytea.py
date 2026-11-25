@@ -66,6 +66,7 @@ def build_command(
     source_type: str = "auto",
     proxy: str | None = None,
     format_override: str | None = None,
+    include_thumbnail: bool = True,
 ) -> list[str]:
     """Build a yt-dlp command while keeping every download in its channel folder."""
     download_dir = ROOT / str(cfg["download_dir"])
@@ -102,13 +103,13 @@ def build_command(
         "--restrict-filenames",
         "--write-info-json",
         "--no-clean-infojson",
-        "--write-thumbnail",
-        "--convert-thumbnails",
-        "jpg",
         "--remote-components",
         "ejs:npm",
     ]
 
+
+    if include_thumbnail:
+        cmd += ["--write-thumbnail", "--convert-thumbnails", "jpg"]
 
     if proxy:
         cmd += ["--proxy", proxy]
