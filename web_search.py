@@ -125,67 +125,71 @@ def fetch_thumbnail(video_id: str, proxy: str | None = None, thumbnail_url: str 
     return image_path.read_bytes(), content_type
 
 
-def search_videos(query: str, limit: int = 10, proxy: str | None = None, offset: int = 0) -> list[dict]:
+SEARCH_PROGRESS: dict[str, dict] = {}
+SEARCH_PROGRESS_LOCK = threading.Lock()
+
+def _set_search_progress(key: str, line: str) -> None:
+    if not key: return
+    with SEARCH_PROGRESS_LOCK:
+        entry = SEARCH_PROGRESS.setdefault(key, {"lines": [], "done": False})
+        entry["lines"].append(line.rstrip())
+        entry["lines"] = entry["lines"][-100:]
+
+def get_search_progress(key: str) -> dict:
+    with SEARCH_PROGRESS_LOCK:
+        return dict(SEARCH_PROGRESS.get(key, {"lines": [], "done": False}))
+
+def search_videos(query: str, limit: int = 10, proxy: str | None = None, offset: int = 0, progress_key: str = "") -> list[dict]:
     query = str(query).strip()
-    if not query:
-        raise ValueError("Enter a search query.")
+    if not query: raise ValueError("Enter a search query.")
     limit = max(1, min(int(limit), 50))
     offset = max(0, min(int(offset), 500))
     proxy = _safe_proxy(proxy)
     end = offset + limit
-    command = _base_ytdlp_args(proxy) + [
-        "--flat-playlist", "--dump-single-json", "--skip-download",
-        "--playlist-start", str(offset + 1), "--playlist-end", str(end),
-        "ytsearch" + str(end) + ":" + query,
-    ]
+    command = _base_ytdlp_args(proxy) + ["--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-start", str(offset + 1), "--playlist-end", str(end), "ytsearch" + str(end) + ":" + query]
+    _set_search_progress(progress_key, "[whytea] Starting yt-dlp search...")
     try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=90,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("YouTube search timed out after 90 seconds.")
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     except OSError as exc:
+        _set_search_progress(progress_key, "[error] Could not start yt-dlp: " + str(exc))
         raise RuntimeError("Could not start yt-dlp: " + str(exc))
-    if result.returncode and not result.stdout.strip():
-        raise RuntimeError((result.stderr or "yt-dlp search failed").strip()[-3000:])
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("yt-dlp returned invalid search data: " + str(exc))
-    entries = payload.get("entries", []) if isinstance(payload, dict) else []
-    blocks = load_blocks()
-    blocked_videos = set(str(x.get("id", "")) for x in blocks["videos"] if isinstance(x, dict))
-    blocked_channels = set(str(x.get("id", "")) for x in blocks["channels"] if isinstance(x, dict))
-    found = []
+    stderr_lines, stdout_box = [], []
+    def read_stderr():
+        assert process.stderr is not None
+        for line in process.stderr:
+            line=line.rstrip()
+            if line: stderr_lines.append(line); _set_search_progress(progress_key,line)
+    def read_stdout():
+        if process.stdout: stdout_box.append(process.stdout.read())
+    err_thread=threading.Thread(target=read_stderr,daemon=True)
+    out_thread=threading.Thread(target=read_stdout,daemon=True)
+    err_thread.start();out_thread.start()
+    try: code=process.wait(timeout=90)
+    except subprocess.TimeoutExpired:
+        process.kill();process.wait();_set_search_progress(progress_key,"[error] Search timed out after 90 seconds.");raise RuntimeError("YouTube search timed out after 90 seconds.")
+    err_thread.join(timeout=3);out_thread.join(timeout=3)
+    stdout=stdout_box[0] if stdout_box else ""
+    if code and not stdout.strip(): raise RuntimeError(("\n".join(stderr_lines) or "yt-dlp search failed")[-3000:])
+    try: payload=json.loads(stdout)
+    except json.JSONDecodeError as exc: raise RuntimeError("yt-dlp returned invalid search data: "+str(exc))
+    entries=payload.get("entries",[]) if isinstance(payload,dict) else []
+    blocks=load_blocks()
+    blocked_videos=set(str(x.get("id","")) for x in blocks["videos"] if isinstance(x,dict))
+    blocked_channels=set(str(x.get("id","")) for x in blocks["channels"] if isinstance(x,dict))
+    found=[]
     for item in entries:
-        if not isinstance(item, dict):
-            continue
-        video_id = str(item.get("id") or "")
-        if not ID_RE.fullmatch(video_id) or video_id in blocked_videos:
-            continue
-        channel_id = str(item.get("channel_id") or item.get("uploader_id") or "")
-        if channel_id and channel_id in blocked_channels:
-            continue
-        thumbnails = item.get("thumbnails") or []
-        thumbnail = item.get("thumbnail")
-        if not thumbnail and thumbnails:
-            thumbnail = next((x.get("url") for x in reversed(thumbnails)
-                              if isinstance(x, dict) and x.get("url")), None)
-        found.append({
-            "id": video_id,
-            "title": str(item.get("title") or "Untitled"),
-            "channel": str(item.get("channel") or item.get("uploader") or "Unknown channel"),
-            "channel_id": channel_id,
-            "duration": item.get("duration"),
-            "view_count": item.get("view_count"),
-            "upload_date": item.get("upload_date") or "",
-            "thumbnail": thumbnail,
-            "url": "https://www.youtube.com/watch?v=" + video_id,
-        })
+        if not isinstance(item,dict): continue
+        video_id=str(item.get("id") or "")
+        if not ID_RE.fullmatch(video_id) or video_id in blocked_videos: continue
+        channel_id=str(item.get("channel_id") or item.get("uploader_id") or "")
+        if channel_id and channel_id in blocked_channels: continue
+        thumbnails=item.get("thumbnails") or [];thumbnail=item.get("thumbnail")
+        if not thumbnail and thumbnails: thumbnail=next((x.get("url") for x in reversed(thumbnails) if isinstance(x,dict) and x.get("url")),None)
+        found.append({"id":video_id,"title":str(item.get("title") or "Untitled"),"channel":str(item.get("channel") or item.get("uploader") or "Unknown channel"),"channel_id":channel_id,"duration":item.get("duration"),"view_count":item.get("view_count"),"upload_date":item.get("upload_date") or "","thumbnail":thumbnail,"url":"https://www.youtube.com/watch?v="+video_id})
+    _set_search_progress(progress_key,"[whytea] Search finished; found "+str(len(found))+" usable results.")
+    with SEARCH_PROGRESS_LOCK:
+        if progress_key in SEARCH_PROGRESS: SEARCH_PROGRESS[progress_key]["done"]=True
     return found
-
-
 def change_block(kind: str, item_id: str, name: str = "", blocked: bool = True) -> dict:
     if kind not in {"video", "channel"}:
         raise ValueError("Block type must be video or channel.")
