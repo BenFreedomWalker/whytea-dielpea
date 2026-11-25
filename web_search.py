@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -79,10 +78,15 @@ def search_videos(query: str, limit: int = 20, proxy: str | None = None) -> list
         "--flat-playlist", "--dump-single-json", "--skip-download",
         "--playlist-end", str(limit), "ytsearch" + str(limit) + ":" + query,
     ]
-    result = subprocess.run(
-        command, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=90,
-    )
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("YouTube search timed out after 90 seconds.")
+    except OSError as exc:
+        raise RuntimeError("Could not start yt-dlp: " + str(exc))
     if result.returncode and not result.stdout.strip():
         raise RuntimeError((result.stderr or "yt-dlp search failed").strip()[-3000:])
     try:
