@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from pathlib import Path
 
 from library import ROOT, delete_video, load_config, scan_library, set_watched
-from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download, get_search_progress, extract_youtube_page, start_batch_download, move_download
+from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download, get_search_progress, extract_youtube_page, start_batch_download, move_download, _persist_jobs, move_download
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -292,18 +292,13 @@ class Handler(BaseHTTPRequestHandler):
 
             if endpoint=='/api/queue/reorder':
                 job_id=str(data.get('job_id',''));direction=str(data.get('direction',''))
-                if direction not in {'up','down'}: raise ValueError('Direction must be up or down.')
-                with __import__('web_search').JOBS_LOCK:
-                    pending=sorted([j for j in __import__('web_search').JOBS.values() if j.get('status')=='queued'],key=lambda j:j['created_at'])
-                    index=next((i for i,j in enumerate(pending) if j['job_id']==job_id),None)
-                    if index is None: raise ValueError('Queued job not found.')
-                    target=index-1 if direction=='up' else index+1
-                    if 0<=target<len(pending): pending[index]['created_at'],pending[target]['created_at']=pending[target]['created_at'],pending[index]['created_at']
-                self.send_json({'ok':True,'jobs':get_downloads()});return
+                jobs=move_download(job_id,direction)
+                self.send_json({'ok':True,'jobs':jobs});return
             if endpoint=='/api/queue/clear-finished':
                 with __import__('web_search').JOBS_LOCK:
                     remove=[jid for jid,j in __import__('web_search').JOBS.items() if j.get('status') in {'completed','failed','cancelled'}]
                     for jid in remove: __import__('web_search').JOBS.pop(jid,None)
+                    _persist_jobs()
                 self.send_json({'ok':True,'jobs':get_downloads()});return
             if endpoint=='/api/batch-download':
                 job=start_batch_download(str(data.get('url','')),str(data.get('source_type','playlist')),data.get('proxy'))
