@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import tempfile
+from urllib.parse import urlparse
 import uuid
 from pathlib import Path
 
@@ -74,56 +75,53 @@ def _base_ytdlp_args(proxy: str | None = None) -> list[str]:
     return args
 
 
-def fetch_thumbnail(video_id: str, proxy: str | None = None) -> tuple[bytes, str]:
-    """Fetch a YouTube thumbnail through the configured yt-dlp executable.
+THUMB_CACHE = ROOT / "cache" / "thumbnails"
+THUMB_HOSTS = {"i.ytimg.com", "yt3.ggpht.com", "lh3.googleusercontent.com", "ytimg.com"}
 
-    Use the executable rather than importing yt_dlp: Whytea supports setups
-    where yt-dlp is installed as a standalone executable or Python script.
-    """
+
+def fetch_thumbnail(video_id: str, proxy: str | None = None, thumbnail_url: str | None = None) -> tuple[bytes, str]:
+    """Cache the thumbnail URL returned by search; never re-extract the video."""
     video_id = str(video_id).strip()
     if not ID_RE.fullmatch(video_id):
         raise ValueError("Invalid YouTube video ID.")
+    THUMB_CACHE.mkdir(parents=True, exist_ok=True)
+    cached = list(THUMB_CACHE.glob(video_id + ".*"))
+    for path in cached:
+        content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+        if content_type.startswith("image/"):
+            return path.read_bytes(), content_type
+    if not thumbnail_url:
+        raise RuntimeError("No thumbnail URL was supplied by YouTube search.")
+    parsed = urlparse(thumbnail_url)
+    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(("ytimg.com", "googleusercontent.com")):
+        raise ValueError("Untrusted thumbnail URL.")
     proxy = _safe_proxy(proxy)
-    cfg = load_config()
     try:
         ytdlp = find_ytdlp()
     except SystemExit as exc:
         raise RuntimeError(str(exc))
-    with tempfile.TemporaryDirectory(prefix="whytea-thumb-") as temp_dir:
-        output_template = str(Path(temp_dir) / "%(id)s.%(ext)s")
-        command = [
-            ytdlp, "--no-warnings", "--skip-download", "--write-thumbnail",
-            "--no-playlist", "--output", output_template,
-            "--extractor-args", "youtube:player_js_variant=tv",
-            "--remote-components", "ejs:npm",
-        ]
-        browser = str(cfg.get("cookies_from_browser", "")).strip()
-        if browser:
-            command += ["--cookies-from-browser", browser]
-        if proxy:
-            command += ["--proxy", proxy]
-        command.append("https://www.youtube.com/watch?v=" + video_id)
-        try:
-            result = subprocess.run(
-                command, capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=45,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Thumbnail request timed out.")
-        except OSError as exc:
-            raise RuntimeError("Could not start yt-dlp for thumbnail: " + str(exc))
-        files = list(Path(temp_dir).glob(video_id + ".*"))
-        if result.returncode != 0 or not files:
-            detail = (result.stderr or result.stdout or "yt-dlp did not produce a thumbnail").strip()
-            raise RuntimeError("Thumbnail download failed: " + detail[-1200:])
-        image_path = files[0]
-        content_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
-        if not content_type.startswith("image/"):
-            raise RuntimeError("yt-dlp returned a non-image thumbnail.")
-        data = image_path.read_bytes()
-        if len(data) > 4 * 1024 * 1024:
-            raise RuntimeError("Thumbnail is unexpectedly large.")
-        return data, content_type
+    output = str(THUMB_CACHE / (video_id + ".%(ext)s"))
+    command = [ytdlp, "--no-warnings", "--no-playlist", "--output", output]
+    if proxy:
+        command += ["--proxy", proxy]
+    command.append(thumbnail_url)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=25)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Thumbnail download timed out.")
+    except OSError as exc:
+        raise RuntimeError("Could not start yt-dlp for thumbnail: " + str(exc))
+    files = list(THUMB_CACHE.glob(video_id + ".*"))
+    if result.returncode != 0 or not files:
+        detail = (result.stderr or result.stdout or "yt-dlp did not save the thumbnail").strip()
+        raise RuntimeError("Thumbnail download failed: " + detail[-1000:])
+    image_path = files[0]
+    content_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
+    if not content_type.startswith("image/") or image_path.stat().st_size > 4 * 1024 * 1024:
+        image_path.unlink(missing_ok=True)
+        raise RuntimeError("Invalid or oversized thumbnail.")
+    return image_path.read_bytes(), content_type
 
 
 def search_videos(query: str, limit: int = 20, proxy: str | None = None) -> list[dict]:
