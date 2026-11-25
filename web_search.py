@@ -185,7 +185,7 @@ def search_videos(query: str, limit: int = 10, proxy: str | None = None, offset:
         if channel_id and channel_id in blocked_channels: continue
         thumbnails=item.get("thumbnails") or [];thumbnail=item.get("thumbnail")
         if not thumbnail and thumbnails: thumbnail=next((x.get("url") for x in reversed(thumbnails) if isinstance(x,dict) and x.get("url")),None)
-        found.append({"id":video_id,"title":str(item.get("title") or "Untitled"),"channel":str(item.get("channel") or item.get("uploader") or "Unknown channel"),"channel_id":channel_id,"duration":item.get("duration"),"view_count":item.get("view_count"),"upload_date":item.get("upload_date") or "","thumbnail":thumbnail,"url":"https://www.youtube.com/watch?v="+video_id})
+        found.append({"id":video_id,"title":str(item.get("title") or "Untitled"),"channel":str(item.get("channel") or item.get("uploader") or "Unknown channel"),"channel_id":channel_id,"channel_url":item.get("channel_url") or item.get("uploader_url"),"duration":item.get("duration"),"view_count":item.get("view_count"),"upload_date":item.get("upload_date") or "","thumbnail":thumbnail,"url":"https://www.youtube.com/watch?v="+video_id})
     _set_search_progress(progress_key,"[whytea] Search finished; found "+str(len(found))+" usable results.")
     with SEARCH_PROGRESS_LOCK:
         if progress_key in SEARCH_PROGRESS: SEARCH_PROGRESS[progress_key]["done"]=True
