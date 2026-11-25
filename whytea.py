@@ -66,7 +66,7 @@ def build_command(
     source_type: str = "auto",
     proxy: str | None = None,
     format_override: str | None = None,
-    include_thumbnail: bool = True,
+    include_thumbnail: bool = False,
 ) -> list[str]:
     """Build a yt-dlp command while keeping every download in its channel folder."""
     download_dir = ROOT / str(cfg["download_dir"])
@@ -133,6 +133,39 @@ def build_command(
     return cmd
 
 
+def build_thumbnail_command(
+    ytdlp: str, source: str, cfg: dict, source_type: str = "auto",
+    proxy: str | None = None,
+) -> list[str]:
+    """Build an independent yt-dlp process that downloads thumbnails only."""
+    download_dir = ROOT / str(cfg["download_dir"])
+    download_dir.mkdir(parents=True, exist_ok=True)
+    output = str(download_dir / "%(uploader)s" / "%(upload_date)s - %(title)s [%(id)s].%(ext)s")
+    cmd = [
+        ytdlp, "--no-warnings", "--ignore-errors", "--skip-download",
+        "--write-thumbnail", "--convert-thumbnails", "jpg",
+        "--output", output, "--windows-filenames", "--restrict-filenames",
+        "--extractor-args", "youtube:player_js_variant=tv",
+        "--remote-components", "ejs:npm",
+    ]
+    if proxy:
+        cmd += ["--proxy", proxy]
+    browser = str(cfg.get("cookies_from_browser", "")).strip()
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+    if cfg.get("no_shorts", True):
+        cmd += ["--match-filter", "!is_live"]
+    if source_type == "video":
+        cmd.append("--no-playlist")
+    else:
+        cmd.append("--yes-playlist")
+        if source_type == "auto":
+            cmd += ["--playlist-end", str(cfg["latest_per_source"])]
+    cmd += validate_extra_args(cfg)
+    cmd.append(source)
+    return cmd
+
+
 def confirm_format_override(format_override: str | None) -> tuple[str | None, bool]:
     """Warn when a bare numeric format ID may download video without audio."""
     if not format_override or not format_override.isdecimal():
@@ -171,10 +204,24 @@ def run_source(
 ) -> int:
     print(f"\n=== {source} ===")
     cmd = build_command(ytdlp, source, cfg, source_type, proxy, format_override)
-    print("Running yt-dlp")
+    thumb_cmd = build_thumbnail_command(ytdlp, source, cfg, source_type, proxy)
+    print("Starting separate thumbnail worker.")
     try:
-        return subprocess.call(cmd)
+        thumbnail_process = subprocess.Popen(thumb_cmd)
+    except OSError as exc:
+        thumbnail_process = None
+        print(f"Could not start thumbnail worker: {exc}")
+    print("Running video/audio downloader.")
+    try:
+        code = subprocess.call(cmd)
+        if thumbnail_process is not None:
+            thumb_code = thumbnail_process.wait()
+            if thumb_code:
+                print(f"Thumbnail worker exited with code {thumb_code}; video result is unchanged.")
+        return code
     except KeyboardInterrupt:
+        if thumbnail_process is not None:
+            thumbnail_process.terminate()
         print("\nStopped by user.")
         return 130
 
