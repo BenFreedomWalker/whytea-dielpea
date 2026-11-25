@@ -8,9 +8,10 @@ import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from pathlib import Path
 
 from library import ROOT, delete_video, load_config, scan_library, set_watched
-from web_search import change_block, fetch_thumbnail, get_blocks, get_downloads, search_videos, start_download
+from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -178,6 +179,8 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path=='/api/videos': self.send_json(scan_library_with_thumbnails());return
         if parsed.path=='/api/blocks': self.send_json(get_blocks());return
         if parsed.path=='/api/downloads': self.send_json(get_downloads());return
+        if parsed.path=='/api/settings': self.send_json(public_settings());return
+        if parsed.path.startswith('/api/download-log/'): self.send_json(get_download_log(unquote(parsed.path.rsplit('/',1)[-1])));return
         if parsed.path.startswith('/ytthumb/'):
             video_id=unquote(parsed.path[len('/ytthumb/'):]);params=parse_qs(parsed.query);proxy=params.get('proxy',[''])[0];thumbnail_url=params.get('url',[''])[0]
             try:
@@ -189,7 +192,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path=='/api/search':
             params=parse_qs(parsed.query);query=params.get('q',[''])[0];proxy=params.get('proxy',[''])[0]
-            try:self.send_json({'results':search_videos(query,20,proxy)})
+            try:
+                limit=max(1,min(int(params.get('limit',['10'])[0]),50));offset=max(0,int(params.get('offset',['0'])[0]));results=search_videos(query,limit,proxy,offset);self.send_json({'results':results,'has_more':len(results)==limit})
             except (ValueError,RuntimeError,TimeoutError) as exc:self.send_json({'error':str(exc)},400)
             return
         if parsed.path.startswith('/video/'): self.serve_file(unquote(parsed.path[7:]),'video');return
@@ -204,6 +208,10 @@ class Handler(BaseHTTPRequestHandler):
                 kind=str(data.get('kind',''));item_id=str(data.get('id',''));name=str(data.get('name',''))
                 blocks=change_block(kind,item_id,name,endpoint=='/api/block')
                 self.send_json({'ok':True,'blocks':blocks});return
+            if endpoint=='/api/settings':
+                current=read_config_file();current.update({k:data[k] for k in ('proxy','use_proxy','cookies_from_browser','no_shorts') if k in data})
+                if current.get('proxy') and not str(current['proxy']).startswith(('socks5://','socks5h://','http://','https://')): raise ValueError('Proxy must include a valid scheme, e.g. socks5://127.0.0.1:10808')
+                write_config_file(current);self.send_json(public_settings());return
             if endpoint=='/api/download':
                 job=start_download(str(data.get('id','')),data.get('proxy'))
                 self.send_json(job,202);return
@@ -244,6 +252,20 @@ class Handler(BaseHTTPRequestHandler):
                 chunk=f.read(min(1024*1024,remaining))
                 if not chunk:break
                 self.wfile.write(chunk);remaining-=len(chunk)
+
+def read_config_file():
+    path=ROOT/'config.json'
+    try:
+        data=json.loads(path.read_text(encoding='utf-8'))
+        return data if isinstance(data,dict) else {}
+    except (OSError,json.JSONDecodeError): return {}
+
+def write_config_file(data):
+    path=ROOT/'config.json';tmp=path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(data,ensure_ascii=False,indent=4)+'\\n',encoding='utf-8');tmp.replace(path)
+
+def public_settings():
+    cfg=load_config();return {'proxy':cfg.get('proxy','socks5://127.0.0.1:10808'),'use_proxy':cfg.get('use_proxy',True),'cookies_from_browser':cfg.get('cookies_from_browser','firefox'),'no_shorts':cfg.get('no_shorts',True)}
 
 def scan_library_with_thumbnails():
     items=scan_library();cfg=load_config();root=(ROOT/str(cfg['download_dir'])).resolve()
