@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from pathlib import Path
 
 from library import ROOT, delete_video, load_config, scan_library, set_watched
-from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download, get_search_progress, extract_youtube_page, start_batch_download
+from web_search import change_block, fetch_thumbnail, get_blocks, get_download_log, get_downloads, search_videos, start_download, cancel_download, get_search_progress, extract_youtube_page, start_batch_download, move_download
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -93,16 +93,20 @@ function renderSearchView(app){
  if(hasMoreResults){const more=document.createElement('button');more.className='more-results';more.textContent=loadingMore?'Loading…':'Load 5 more';more.disabled=loadingMore;more.onclick=loadMoreResults;app.appendChild(more);}
 }
 
-let channelUrl='',channelName='',channelTab='videos',channelData=null,channelLoading=false,channelError='',channelSearch='';
+let channelUrl='',channelName='',channelTab='videos',channelData=null,channelLoading=false,channelError='',channelSearch='',channelOffset=0,channelHasMore=false,channelLoadingMore=false;
+let playlistUrl='',playlistName='',playlistData=null,playlistLoading=false,playlistError='',playlistSearch='',playlistOffset=0,playlistHasMore=false,playlistLoadingMore=false;
+let selectedEntries=new Set();
 let queueExpanded=true;
-function openChannel(url,name){channelUrl=String(url||'');channelName=String(name||'Channel');channelTab='videos';channelData=null;channelSearch='';channelError='';view='channel';render();loadChannel('videos');}
+function openChannel(url,name){channelUrl=String(url||'');if(!channelUrl||channelUrl.includes('/undefined')){alert('This result did not include a usable channel URL.');return;}channelName=String(name||'Channel');channelTab='videos';channelData=null;channelSearch='';channelOffset=0;channelHasMore=false;selectedEntries.clear();channelError='';view='channel';render();loadChannel('videos');}
 function channelTabUrl(tab){let base=channelUrl.replace(/\/(videos|shorts|streams|playlists|about)\/?$/,'').replace(/\/$/,'');return base+'/'+tab;}
-async function loadChannel(tab=channelTab){
- channelTab=tab;channelLoading=true;channelError='';render();
- try{const params=new URLSearchParams({url:channelUrl,tab,limit:'100',proxy:proxyEnabled?searchProxy:''});const r=await fetch('/api/channel?'+params);const d=await r.json();if(!r.ok)throw new Error(d.error||'Unable to load channel.');channelData=d;channelName=d.channel?.name||channelName;}
- catch(e){channelError=e.message;channelData=null;}
- channelLoading=false;render();
+async function loadChannel(tab=channelTab,append=false){
+ channelTab=tab;if(!append){channelOffset=0;channelData=null;selectedEntries.clear();}channelLoading=!append;channelLoadingMore=append;channelError='';render();
+ try{const params=new URLSearchParams({url:channelUrl,tab,limit:'100',offset:String(append?channelOffset:0),proxy:proxyEnabled?searchProxy:''});const r=await fetch('/api/channel?'+params);const d=await r.json();if(!r.ok)throw new Error(d.error||'Unable to load channel.');channelName=d.channel?.name||channelName;channelData=append?{...d,entries:[...(channelData?.entries||[]),...(d.entries||[])]}:d;channelOffset=d.next_offset??((append?channelOffset:0)+(d.entries||[]).length);channelHasMore=!!d.has_more;}
+ catch(e){channelError=e.message;if(!append)channelData=null;}
+ channelLoading=false;channelLoadingMore=false;render();
 }
+function toggleEntry(id,checked){if(checked)selectedEntries.add(id);else selectedEntries.delete(id);}
+async function queueSelected(){const ids=[...selectedEntries];if(!ids.length)return;for(const id of ids)await startDownload(id);selectedEntries.clear();await refreshDownloads();render();}
 function renderChannelView(app){const channelSearchFocus=document.activeElement?.placeholder==='Search this channel tab…';const channelSearchCursor=channelSearchFocus?document.activeElement.selectionStart:null;
  const nav='<div class="nav"><button title="Library" onclick="view=\'library\';render()"><svg viewBox="0 0 24 24"><path d="M4 5.5h5v13H4zM10 4h5v14.5h-5zM16 6h4v12.5h-4zM3 20.5h18"/></svg></button><button title="Search" onclick="view=\'search\';render()"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></button><button title="Download queue" onclick="view=\'queue\';refreshDownloads().then(render)"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h11M4 20h8"/><path d="m17 16 4 3-4 3"/></svg></button><button title="Blocked content" onclick="showBlocked()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg></button><button title="Settings" onclick="showSettings()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/></svg></button></div>';
  const tabs=['videos','shorts','streams','playlists','about'];
@@ -120,8 +124,7 @@ function renderChannelView(app){const channelSearchFocus=document.activeElement?
  app.innerHTML=nav+'<button class="back" onclick="view=\'search\';render()">← Back to search</button><div class="channel-header"><h1>'+esc(ch.name||channelName)+'</h1><div class="sub">'+esc(ch.channel_url||ch.uploader_url||ch.url||channelUrl)+'</div><div class="sub">'+(ch.subscriber_count?Number(ch.subscriber_count).toLocaleString()+' subscribers · ':'')+(ch.video_count?Number(ch.video_count).toLocaleString()+' videos':'')+(ch.country?' · '+esc(ch.country):'')+'</div><div class="search-actions"><button onclick="addBatch(encodeURIComponent(channelTabUrl(\'videos\')),\'channel\')">Download channel videos</button><button onclick="addBatch(encodeURIComponent(channelTabUrl(\'shorts\')),\'channel\')">Download Shorts</button><button onclick="addBatch(encodeURIComponent(channelTabUrl(\'streams\')),\'channel\')">Download streams</button></div></div><div class="channel-tabs">'+tabButtons+'</div>'+(channelTab!=='about'?'<div class="toolbar"><input type="search" placeholder="Search this channel tab…" value="'+esc(channelSearch)+'" oninput="channelSearch=this.value;render()" style="background:#202020;color:#eee;border:1px solid #444;padding:9px;border-radius:3px;flex:1"><button onclick="loadChannel(channelTab)">Refresh</button></div>':'')+(channelLoading?'<div class="empty">Loading channel…</div>':'')+(channelError?'<div class="empty">'+esc(channelError)+'</div>':'')+(channelTab==='about'&&ch?'<section class="about-panel"><h2>About</h2><p>'+esc(ch.description||'No channel description was returned.')+'</p><div class="about-grid">'+[['Channel ID',ch.id],['Country',ch.country],['Subscribers',ch.subscriber_count],['Channel views',ch.view_count],['Video count',ch.video_count],['Channel URL',ch.channel_url||ch.uploader_url||ch.url]].filter(x=>x[1]).map(x=>'<div><strong>'+esc(x[0])+'</strong><div>'+esc(x[1])+'</div></div>').join('')+'</div></section>':'')+(channelTab!=='about'&&!channelLoading?'<div class="sub">'+list.length+' loaded item(s)'+(channelData?.has_more?' · More items may exist':'')+'</div><div class="search-results">'+(card||'<div class="empty">No matches in loaded items.</div>')+'</div>':'');\n if(channelSearchFocus){const input=app.querySelector('input[placeholder="Search this channel tab…"]');if(input){input.focus();if(channelSearchCursor!==null)input.setSelectionRange(channelSearchCursor,channelSearchCursor);}}
 }
 function openPlaylist(encodedUrl,encodedTitle){playlistUrl=decodeURIComponent(encodedUrl);playlistName=decodeURIComponent(encodedTitle||'Playlist');playlistData=null;playlistLoading=false;playlistError='';view='playlist';loadPlaylist();render();}
-let playlistUrl='',playlistName='',playlistData=null,playlistLoading=false,playlistError='',playlistSearch='';
-async function loadPlaylist(){playlistLoading=true;render();try{const p=new URLSearchParams({url:playlistUrl,tab:'playlist',limit:'100',proxy:proxyEnabled?searchProxy:''});const r=await fetch('/api/channel?'+p);const d=await r.json();if(!r.ok)throw new Error(d.error||'Playlist loading failed.');playlistData=d;}catch(e){playlistError=e.message;}playlistLoading=false;render();}
+async function loadPlaylist(append=false){playlistLoading=!append;playlistLoadingMore=append;render();try{const p=new URLSearchParams({url:playlistUrl,tab:'playlist',limit:'100',offset:String(append?playlistOffset:0),proxy:proxyEnabled?searchProxy:''});const r=await fetch('/api/channel?'+p);const d=await r.json();if(!r.ok)throw new Error(d.error||'Playlist loading failed.');playlistData=append?{...d,entries:[...(playlistData?.entries||[]),...(d.entries||[])]}:d;playlistOffset=d.next_offset??((append?playlistOffset:0)+(d.entries||[]).length);playlistHasMore=!!d.has_more;}catch(e){playlistError=e.message;}playlistLoading=false;playlistLoadingMore=false;render();}
 function renderPlaylistView(app){const playlistSearchFocus=document.activeElement?.placeholder==='Search playlist…';const playlistSearchCursor=playlistSearchFocus?document.activeElement.selectionStart:null;
  const nav='<div class="nav"><button title="Library" onclick="view=\'library\';render()">Library</button><button title="Search" onclick="view=\'search\';render()">Search</button><button title="Queue" onclick="view=\'queue\';refreshDownloads().then(render)">Queue</button><button title="Blocked" onclick="showBlocked()">Blocked</button><button title="Settings" onclick="showSettings()">Settings</button></div>';
  const entries=playlistData?.entries||[],q=playlistSearch.trim().toLowerCase(),items=entries.filter(v=>!q||String(v.title||'').toLowerCase().includes(q));
@@ -259,8 +262,8 @@ class Handler(BaseHTTPRequestHandler):
             params=parse_qs(parsed.query);key=params.get('key',[''])[0];self.send_json(get_search_progress(key));return
 
         if parsed.path=='/api/channel':
-            params=parse_qs(parsed.query);url=params.get('url',[''])[0];tab=params.get('tab',['videos'])[0];limit=params.get('limit',['30'])[0];proxy=params.get('proxy',[''])[0]
-            try:self.send_json(extract_youtube_page(url,tab,int(limit),proxy))
+            params=parse_qs(parsed.query);url=params.get('url',[''])[0];tab=params.get('tab',['videos'])[0];limit=params.get('limit',['30'])[0];offset=params.get('offset',['0'])[0];proxy=params.get('proxy',[''])[0]
+            try:self.send_json(extract_youtube_page(url,tab,int(limit),proxy,int(offset)))
             except (ValueError,RuntimeError,TimeoutError) as exc:self.send_json({'error':str(exc)},400)
             return
         if parsed.path=='/api/search':
@@ -311,6 +314,9 @@ class Handler(BaseHTTPRequestHandler):
             if endpoint=='/api/cancel-download':
                 job=cancel_download(str(data.get('job_id','')))
                 self.send_json(job);return
+            if endpoint=='/api/move-download':
+                jobs=move_download(str(data.get('job_id','')),str(data.get('direction','')))
+                self.send_json(jobs);return
             if endpoint=='/api/watch':
                 ok=set_watched(str(data['id']),bool(data.get('watched',True)))
                 self.send_json({'ok':ok},200 if ok else 404)
