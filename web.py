@@ -85,7 +85,7 @@ function jobFor(id){return downloadJobs.find(x=>x.video_id===id);}
 function searchProxyEnabled(){return proxyEnabled;}
 function renderSearchView(app){
  const nav='<div class="nav"><button onclick="view=\'library\';render()">Library</button><button class="active" onclick="view=\'search\';render()">Search YouTube</button><button onclick="showBlocked()">Blocked content</button></div>';
- const cards=searchResults.map(v=>{const job=jobFor(v.id);const thumb='<div class="search-thumb-wrap"><img class="search-thumb" src="/ytthumb/'+encodeURIComponent(v.id)+'?proxy='+encodeURIComponent(searchProxyEnabled()?searchProxy:'')+'" loading="lazy" decoding="async" alt="" onerror="this.style.display=\'none\'"></div>';return '<article class="search-card">'+thumb+'<div class="search-info"><div class="title">'+esc(v.title)+'</div><div class="channel">'+esc(v.channel)+'</div><div class="date">'+(v.duration?esc(duration(v.duration))+' · ':'')+esc(views(v.view_count))+'</div>'+(job?'<div class="status '+esc(job.status)+'">Download: '+esc(job.status)+(job.error?' — '+esc(job.error):'')+'</div>':'')+'<div class="search-actions"><button onclick="startDownload(\''+esc(v.id)+'\')">Download</button><a href="'+esc(v.url)+'" target="_blank" rel="noopener noreferrer"><button>Open YouTube</button></a></div></div>'+searchMenu(v)+'</article>';}).join('');
+ const cards=searchResults.map(v=>{const job=jobFor(v.id);const thumb='<div class="search-thumb-wrap"><img class="search-thumb" src="/ytthumb/'+encodeURIComponent(v.id)+'?proxy='+encodeURIComponent(searchProxyEnabled()?searchProxy:'')+'&url='+encodeURIComponent(v.thumbnail||'')+'" loading="lazy" decoding="async" alt="" onerror="this.style.display=\'none\'"></div>';return '<article class="search-card">'+thumb+'<div class="search-info"><div class="title">'+esc(v.title)+'</div><div class="channel">'+esc(v.channel)+'</div><div class="date">'+(v.duration?esc(duration(v.duration))+' · ':'')+esc(views(v.view_count))+'</div>'+(job?'<div class="status '+esc(job.status)+'">Download: '+esc(job.status)+(job.error?' — '+esc(job.error):'')+'</div>':'')+'<div class="search-actions"><button onclick="startDownload(\''+esc(v.id)+'\')">Download</button><a href="'+esc(v.url)+'" target="_blank" rel="noopener noreferrer"><button>Open YouTube</button></a></div></div>'+searchMenu(v)+'</article>';}).join('');
 
  app.innerHTML=nav+'<h1>YouTube search</h1><div class="sub">Find videos, download them, or block unwanted videos and channels.</div><div class="toolbar search-toolbar"><input id="search-query" type="search" placeholder="Search YouTube..." value="'+esc(searchTerm)+'" onkeydown="if(event.key===\'Enter\')searchVideos()"><label class="proxy-control"><input id="proxy-enabled" type="checkbox" '+(proxyEnabled?'checked':'')+' onchange="searchProxy=document.getElementById(&quot;search-proxy&quot;).value.trim()||searchProxy;proxyEnabled=this.checked;render()"> Use proxy</label><input id="search-proxy" type="text" placeholder="SOCKS5 proxy" value="'+esc(searchProxy)+'" '+(proxyEnabled?'':'disabled')+' style="max-width:220px"><button onclick="searchVideos()" '+(searchLoading?'disabled':'')+'>'+(searchLoading?'Searching…':'Search')+'</button></div>'+(searchError?'<div class="empty">'+esc(searchError)+'</div>':'')+(searchLoading?'<div class="empty">Searching YouTube…</div>':'')+'<div class="sub">'+(searchResults.length?searchResults.length+' results':'')+'</div><div class="search-results">'+(cards||(!searchLoading?'<div class="empty">Enter a search term to find videos.</div>':''))+'</div>';
 }
@@ -129,7 +129,7 @@ async function startDownload(id){
   await refreshDownloads();render();
  }catch(error){alert(error.message);}
 }
-async function refreshDownloads(){try{const r=await fetch('/api/downloads');if(r.ok)downloadJobs=await r.json();}catch(e){}}
+async function refreshDownloads(){try{const r=await fetch('/api/downloads');if(r.ok)downloadJobs=await r.json();}catch(e){}return downloadJobs.some(job=>job.status==='queued'||job.status==='running');}
 async function load(){let r=await fetch('/api/videos');videos=await r.json();render();}
 async function mark(id,watched){await fetch('/api/watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,watched})});await load();if(location.pathname.startsWith('/watch/'))render();}
 async function deleteVideo(id){
@@ -151,7 +151,7 @@ document.addEventListener('click',event=>{
 document.addEventListener('keydown',event=>{
  if(event.key==='Escape')document.querySelectorAll('.menu[open]').forEach(menu=>menu.removeAttribute('open'));
 });
-window.onpopstate=render;load();window.setInterval(async()=>{await refreshDownloads();if(view==='search'&&document.activeElement?.id!=='search-query'&&document.activeElement?.id!=='search-proxy')render();},2500);
+window.onpopstate=render;load();window.setInterval(async()=>{if(view!=='search')return;const active=await refreshDownloads();if(active&&document.activeElement?.id!=='search-query'&&document.activeElement?.id!=='search-proxy')render();},4000);
 </script>
 </body></html>'''
 
@@ -179,9 +179,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path=='/api/blocks': self.send_json(get_blocks());return
         if parsed.path=='/api/downloads': self.send_json(get_downloads());return
         if parsed.path.startswith('/ytthumb/'):
-            video_id=unquote(parsed.path[len('/ytthumb/'):]);params=parse_qs(parsed.query);proxy=params.get('proxy',[''])[0]
+            video_id=unquote(parsed.path[len('/ytthumb/'):]);params=parse_qs(parsed.query);proxy=params.get('proxy',[''])[0];thumbnail_url=params.get('url',[''])[0]
             try:
-                image_data,content_type=fetch_thumbnail(video_id,proxy)
+                image_data,content_type=fetch_thumbnail(video_id,proxy,thumbnail_url)
                 self.send_response(200);self.send_header('Content-Type',content_type);self.send_header('Content-Length',str(len(image_data)));self.send_header('Cache-Control','public, max-age=86400');self.end_headers();self.wfile.write(image_data)
             except Exception as exc:
                 print(f"Thumbnail fetch failed for {video_id}: {exc}")
