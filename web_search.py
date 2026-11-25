@@ -125,15 +125,18 @@ def fetch_thumbnail(video_id: str, proxy: str | None = None, thumbnail_url: str 
     return image_path.read_bytes(), content_type
 
 
-def search_videos(query: str, limit: int = 20, proxy: str | None = None) -> list[dict]:
+def search_videos(query: str, limit: int = 10, proxy: str | None = None, offset: int = 0) -> list[dict]:
     query = str(query).strip()
     if not query:
         raise ValueError("Enter a search query.")
     limit = max(1, min(int(limit), 50))
+    offset = max(0, min(int(offset), 500))
     proxy = _safe_proxy(proxy)
+    end = offset + limit
     command = _base_ytdlp_args(proxy) + [
         "--flat-playlist", "--dump-single-json", "--skip-download",
-        "--playlist-end", str(limit), "ytsearch" + str(limit) + ":" + query,
+        "--playlist-start", str(offset + 1), "--playlist-end", str(end),
+        "ytsearch" + str(end) + ":" + query,
     ]
     try:
         result = subprocess.run(
@@ -203,6 +206,54 @@ def get_blocks() -> dict:
     return load_blocks()
 
 
+LOG_DIR = ROOT / "logs"
+
+
+def _append_log(job_id: str, line: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with (LOG_DIR / (job_id + ".log")).open("a", encoding="utf-8", errors="replace") as log:
+        log.write(line + "\n")
+
+
+def get_download_log(job_id: str) -> dict:
+    if not re.fullmatch(r"[a-f0-9]{12}", str(job_id)):
+        raise ValueError("Invalid download job ID.")
+    path = LOG_DIR / (job_id + ".log")
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        content = ""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id, {})
+        status = job.get("status", "unknown")
+    return {"job_id": job_id, "status": status, "log": content[-60000:]}
+
+
+def _run_thumbnail_worker(job_id: str, video_id: str, proxy: str | None, cfg: dict) -> None:
+    try:
+        ytdlp = find_ytdlp()
+        download_dir = ROOT / str(cfg["download_dir"])
+        output = str(download_dir / "%(uploader)s" / "%(upload_date)s - %(title)s [%(id)s].%(ext)s")
+        command = [ytdlp, "--no-warnings", "--no-playlist", "--skip-download", "--write-thumbnail",
+                   "--convert-thumbnails", "jpg", "--output", output,
+                   "--extractor-args", "youtube:player_js_variant=tv", "--remote-components", "ejs:npm"]
+        if proxy:
+            command += ["--proxy", proxy]
+        browser = str(cfg.get("cookies_from_browser", "")).strip()
+        if browser:
+            command += ["--cookies-from-browser", browser]
+        command.append("https://www.youtube.com/watch?v=" + video_id)
+        _append_log(job_id, "[thumbnail] Starting separate thumbnail worker")
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+        for line in (result.stdout + "\n" + result.stderr).splitlines():
+            if line.strip():
+                _append_log(job_id, "[thumbnail] " + line.rstrip())
+        if result.returncode:
+            _append_log(job_id, f"[thumbnail] Worker exited with code {result.returncode}")
+    except Exception as exc:
+        _append_log(job_id, "[thumbnail] " + str(exc))
+
+
 def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
     try:
         cfg = load_config()
@@ -212,8 +263,10 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
             cfg,
             source_type="video",
             proxy=proxy,
+            include_thumbnail=False,
         )
-        # Force yt-dlp to emit each progress update as a parseable line.
+        thumb_thread = threading.Thread(target=_run_thumbnail_worker, args=(job_id, video_id, proxy, cfg), daemon=True)
+        thumb_thread.start()
         command.insert(-1, "--newline")
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "running"
@@ -227,6 +280,7 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
         for line in process.stdout:
             line = line.rstrip()
             if line:
+                _append_log(job_id, "[video] " + line)
                 match = PROGRESS_RE.search(line)
                 with JOBS_LOCK:
                     if match:
@@ -240,11 +294,13 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
             JOBS[job_id]["returncode"] = code
             JOBS[job_id]["output"] = tail[-20:]
             JOBS[job_id]["finished_at"] = time.time()
+        thumb_thread.join(timeout=185)
     except (Exception, SystemExit) as exc:
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "failed"
             JOBS[job_id]["error"] = str(exc)
             JOBS[job_id]["finished_at"] = time.time()
+        _append_log(job_id, "[error] " + str(exc))
 
 
 def start_download(video_id: str, proxy: str | None = None) -> dict:
