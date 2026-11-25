@@ -107,7 +107,7 @@ async function loadChannel(tab=channelTab,append=false){
 }
 function selectLoadedEntries(checked,entries){for(const entry of entries||[]){if(entry?.id){if(checked)selectedEntries.add(entry.id);else selectedEntries.delete(entry.id);}}render();}
 function toggleEntry(id,checked){if(checked)selectedEntries.add(id);else selectedEntries.delete(id);}
-async function queueSelected(){const ids=[...selectedEntries];if(!ids.length)return;for(const id of ids)await startDownload(id);selectedEntries.clear();await refreshDownloads();render();}
+async function queueSelected(){const ids=[...selectedEntries];if(!ids.length)return;try{const r=await fetch('/api/download-many',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,proxy:searchProxyEnabled()?searchProxy:''})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not queue selected videos.');selectedEntries.clear();await refreshDownloads();render();}catch(e){alert(e.message);}}
 async function addAllChannelTabs(){if(!confirm('Queue all channel uploads, Shorts, and livestreams?'))return;const tabs=['videos','shorts','streams'];try{for(const tab of tabs){const r=await fetch('/api/batch-download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:channelTabUrl(tab),source_type:'channel',proxy:proxyEnabled?searchProxy:''})});const d=await r.json();if(!r.ok)throw new Error(d.error||('Could not queue '+tab));}await refreshDownloads();alert('All channel tabs added to queue.');if(view==='queue')render();}catch(e){alert(e.message);}}
 function renderChannelView(app){const channelSearchFocus=document.activeElement?.placeholder==='Search this channel tab…';const channelSearchCursor=channelSearchFocus?document.activeElement.selectionStart:null;
  const nav='<div class="nav"><button title="Library" onclick="view=\'library\';render()"><svg viewBox="0 0 24 24"><path d="M4 5.5h5v13H4zM10 4h5v14.5h-5zM16 6h4v12.5h-4zM3 20.5h18"/></svg></button><button title="Search" onclick="view=\'search\';render()"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg></button><button title="Download queue" onclick="view=\'queue\';refreshDownloads().then(render)"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h11M4 20h8"/><path d="m17 16 4 3-4 3"/></svg></button><button title="Blocked content" onclick="showBlocked()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg></button><button title="Settings" onclick="showSettings()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/></svg></button></div>';
@@ -306,6 +306,13 @@ class Handler(BaseHTTPRequestHandler):
                     for jid in remove: __import__('web_search').JOBS.pop(jid,None)
                     _persist_jobs()
                 self.send_json({'ok':True,'jobs':get_downloads()});return
+
+            if endpoint=='/api/download-many':
+                ids=data.get('ids',[])
+                if not isinstance(ids,list): raise ValueError('ids must be a list of video IDs.')
+                if len(ids)>500: raise ValueError('Queue at most 500 selected videos at once.')
+                jobs=[start_download(str(video_id),data.get('proxy')) for video_id in ids]
+                self.send_json({'ok':True,'jobs':jobs,'queue':get_downloads()},202);return
             if endpoint=='/api/batch-download':
                 job=start_batch_download(str(data.get('url','')),str(data.get('source_type','playlist')),data.get('proxy'))
                 self.send_json(job,202);return
