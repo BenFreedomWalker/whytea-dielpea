@@ -116,7 +116,7 @@ async function blockItem(kind,id,name){
 }
 async function showBlocked(){view='blocked';try{const r=await fetch('/api/blocks');blocked=await r.json();}catch(e){}render();}
 function renderBlockedView(app){
- const nav='<div class="nav"><button title="Library" onclick="view=\'library\';render()">📚</button><button class="active" title="YouTube search" onclick="view=\'search\';render()">🔎</button><button title="Blocked content" onclick="showBlocked()">🚫</button><button title="Settings" onclick="showSettings()">⚙️</button></div>';
+ const nav='<div class="nav"><button title="Library" onclick="view=\\'library\\';render()">📚</button><button title="YouTube search" onclick="view=\\'search\\';render()">🔎</button><button class="active" title="Blocked content" onclick="showBlocked()">🚫</button><button title="Settings" onclick="showSettings()">⚙️</button></div>';
  const rows=(items,kind)=>items.length?items.map(x=>'<div class="blocked-row"><div class="blocked-name"><strong>'+esc(x.name||x.id)+'</strong><div class="date">'+esc(x.id)+'</div></div><button onclick="unblockItem(\''+kind+'\',\''+esc(x.id)+'\')">Unblock</button></div>').join(''):'<div class="empty">Nothing blocked.</div>';
  app.innerHTML=nav+'<h1>Blocked content</h1><div class="sub">Blocked items are filtered out of future YouTube searches.</div><h2>Videos</h2>'+rows(blocked.videos||[],'video')+'<h2>Channels</h2>'+rows(blocked.channels||[],'channel');
 }
