@@ -353,7 +353,7 @@ def cancel_download(job_id: str) -> dict:
             process.terminate()
     _append_log(job_id, "[cancel] Cancellation requested by user")
     with JOBS_LOCK:
-        return {k: v for k, v in JOBS[job_id].items() if k != "process"}
+        return {k: v for k, v in JOBS[job_id].items() if k not in {"process", "thumbnail_process"}}
 def start_download(video_id: str, proxy: str | None = None) -> dict:
     video_id = str(video_id).strip()
     if not ID_RE.fullmatch(video_id):
