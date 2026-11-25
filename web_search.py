@@ -289,12 +289,12 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
                     tail = tail[-35:]
                     JOBS[job_id]["output"] = tail[-12:]
         code = process.wait()
+        thumb_thread.join(timeout=185)
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "completed" if code == 0 else "failed"
             JOBS[job_id]["returncode"] = code
             JOBS[job_id]["output"] = tail[-20:]
             JOBS[job_id]["finished_at"] = time.time()
-        thumb_thread.join(timeout=185)
     except (Exception, SystemExit) as exc:
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "failed"
