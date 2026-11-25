@@ -362,7 +362,7 @@ def start_download(video_id: str, proxy: str | None = None) -> dict:
     with JOBS_LOCK:
         for job in JOBS.values():
             if job["video_id"] == video_id and job["status"] in {"queued", "running"}:
-                return dict(job)
+                return {k: v for k, v in job.items() if k not in {"process", "thumbnail_process"}}
         job_id = uuid.uuid4().hex[:12]
         job = {
             "job_id": job_id, "video_id": video_id, "status": "queued",
@@ -376,4 +376,4 @@ def start_download(video_id: str, proxy: str | None = None) -> dict:
 
 def get_downloads() -> list[dict]:
     with JOBS_LOCK:
-        return [{k: v for k, v in job.items() if k != "process"} for job in sorted(JOBS.values(), key=lambda x: x["created_at"], reverse=True)]
+        return [{k: v for k, v in job.items() if k not in {"process", "thumbnail_process"}} for job in sorted(JOBS.values(), key=lambda x: x["created_at"], reverse=True)]
