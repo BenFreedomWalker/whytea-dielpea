@@ -183,8 +183,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 image_data,content_type=fetch_thumbnail(video_id,proxy)
                 self.send_response(200);self.send_header('Content-Type',content_type);self.send_header('Content-Length',str(len(image_data)));self.send_header('Cache-Control','public, max-age=86400');self.end_headers();self.wfile.write(image_data)
-            except Exception:
-                self.send_error(404)
+            except Exception as exc:
+                print(f"Thumbnail fetch failed for {video_id}: {exc}")
+                self.send_error(502, "Thumbnail fetch failed")
             return
         if parsed.path=='/api/search':
             params=parse_qs(parsed.query);query=params.get('q',[''])[0];proxy=params.get('proxy',[''])[0]
