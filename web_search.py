@@ -20,6 +20,7 @@ BLOCKS_PATH = ROOT / "blocked_content.json"
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,}$")
+PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 
 
 def load_blocks() -> dict:
@@ -212,6 +213,8 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
             source_type="video",
             proxy=proxy,
         )
+        # Force yt-dlp to emit each progress update as a parseable line.
+        command.insert(-1, "--newline")
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "running"
             JOBS[job_id]["started_at"] = time.time()
@@ -224,9 +227,12 @@ def _run_download(job_id: str, video_id: str, proxy: str | None) -> None:
         for line in process.stdout:
             line = line.rstrip()
             if line:
-                tail.append(line)
-                tail = tail[-35:]
+                match = PROGRESS_RE.search(line)
                 with JOBS_LOCK:
+                    if match:
+                        JOBS[job_id]["progress"] = min(100.0, max(0.0, float(match.group(1))))
+                    tail.append(line)
+                    tail = tail[-35:]
                     JOBS[job_id]["output"] = tail[-12:]
         code = process.wait()
         with JOBS_LOCK:
@@ -253,7 +259,7 @@ def start_download(video_id: str, proxy: str | None = None) -> dict:
         job_id = uuid.uuid4().hex[:12]
         job = {
             "job_id": job_id, "video_id": video_id, "status": "queued",
-            "output": [], "created_at": time.time(),
+            "output": [], "progress": 0.0, "created_at": time.time(),
         }
         JOBS[job_id] = job
     thread = threading.Thread(target=_run_download, args=(job_id, video_id, proxy), daemon=True)
