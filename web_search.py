@@ -190,6 +190,45 @@ def search_videos(query: str, limit: int = 10, proxy: str | None = None, offset:
     with SEARCH_PROGRESS_LOCK:
         if progress_key in SEARCH_PROGRESS: SEARCH_PROGRESS[progress_key]["done"]=True
     return found
+
+def _youtube_url(url: str) -> str:
+    url = str(url).strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"https", "http"} or parsed.hostname not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}:
+        raise ValueError("Please provide a valid YouTube URL.")
+    return url
+
+def extract_youtube_page(url: str, tab: str = "videos", limit: int = 30, proxy: str | None = None) -> dict:
+    """Extract a channel tab or playlist overview using yt-dlp metadata only."""
+    url = _youtube_url(url)
+    tab = str(tab or "videos").lower()
+    limit = max(1, min(int(limit), 100))
+    if tab not in {"videos", "shorts", "streams", "playlists", "about", "playlist"}:
+        raise ValueError("Unsupported channel tab.")
+    if tab != "playlist":
+        if re.search(r"youtube\.com/(?:@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)(?:/[^?]*)?$", url):
+            parts = url.rstrip("/").split("/")
+            if parts[-1] in {"videos", "shorts", "streams", "playlists", "about"}: parts.pop()
+            url = "/".join(parts)
+        url = url.rstrip("/") + "/" + tab
+    proxy = _safe_proxy(proxy)
+    command = _base_ytdlp_args(proxy) + ["--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-end", str(limit)]
+    if tab == "about":
+        command.remove("--flat-playlist"); command.remove("--playlist-end"); command.remove(str(limit))
+    command.append(url)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("YouTube page extraction timed out.") from exc
+    if result.returncode and not result.stdout.strip():
+        raise RuntimeError((result.stderr or "yt-dlp extraction failed")[-2500:])
+    try: payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc: raise RuntimeError("yt-dlp returned invalid page metadata.") from exc
+    entries = payload.get("entries") or []
+    channel = {"id": payload.get("channel_id") or payload.get("id"), "name": payload.get("channel") or payload.get("uploader") or payload.get("title"), "title": payload.get("title"), "description": payload.get("description"), "url": payload.get("webpage_url") or url, "channel_url": payload.get("channel_url"), "uploader_url": payload.get("uploader_url"), "subscriber_count": payload.get("subscriber_count"), "view_count": payload.get("view_count"), "video_count": payload.get("video_count"), "country": payload.get("country"), "channel_follower_count": payload.get("channel_follower_count"), "thumbnails": payload.get("thumbnails") or [], "availability": payload.get("availability"), "playlist_count": payload.get("playlist_count")}
+    items = [{"id": e.get("id"), "title": e.get("title"), "url": e.get("url") or e.get("webpage_url") or ("https://www.youtube.com/watch?v="+str(e.get("id"))), "duration": e.get("duration"), "view_count": e.get("view_count"), "upload_date": e.get("upload_date"), "thumbnail": e.get("thumbnail"), "channel": e.get("channel") or e.get("uploader"), "channel_id": e.get("channel_id"), "playlist_count": e.get("playlist_count")} for e in entries if isinstance(e, dict)]
+    return {"channel": channel, "entries": items, "tab": tab, "has_more": len(entries) >= limit}
+
 def change_block(kind: str, item_id: str, name: str = "", blocked: bool = True) -> dict:
     if kind not in {"video", "channel"}:
         raise ValueError("Block type must be video or channel.")
@@ -358,25 +397,99 @@ def cancel_download(job_id: str) -> dict:
     _append_log(job_id, "[cancel] Cancellation requested by user")
     with JOBS_LOCK:
         return {k: v for k, v in JOBS[job_id].items() if k not in {"process", "thumbnail_process"}}
+
+def _run_batch_download(job_id: str, source_url: str, source_type: str, proxy: str | None) -> None:
+    process = None
+    try:
+        cfg = load_config()
+        command = build_command(find_ytdlp(), source_url, cfg, source_type=source_type, proxy=proxy, include_thumbnail=True)
+        command.insert(-1, "--newline")
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            if not job or job.get("cancel_requested"): return
+            job["status"] = "running"; job["started_at"] = time.time()
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+            job["process"] = process
+        tail=[]
+        assert process.stdout is not None
+        for line in process.stdout:
+            line=line.rstrip()
+            if line:
+                _append_log(job_id,line);tail.append(line);tail=tail[-35:]
+                match=PROGRESS_RE.search(line)
+                with JOBS_LOCK:
+                    if match: JOBS[job_id]["progress"]=min(100.0,max(0.0,float(match.group(1))))
+                    JOBS[job_id]["output"]=tail[-12:]
+        code=process.wait()
+        with JOBS_LOCK:
+            job=JOBS[job_id];cancelled=job.get("cancel_requested",False)
+            job["status"]="cancelled" if cancelled else ("completed" if code==0 else "failed")
+            job["returncode"]=code;job["output"]=tail[-20:];job["finished_at"]=time.time()
+    except Exception as exc:
+        with JOBS_LOCK:
+            job=JOBS.get(job_id)
+            if job: job["status"]="cancelled" if job.get("cancel_requested") else "failed";job["error"]=str(exc);job["finished_at"]=time.time()
+        _append_log(job_id,"[error] "+str(exc))
+    finally:
+        with JOBS_LOCK:
+            if job_id in JOBS: JOBS[job_id]["process"]=None
+
+QUEUE_LOCK=threading.Lock()
+QUEUE_ACTIVE=False
+
+def _queue_loop():
+    global QUEUE_ACTIVE
+    try:
+        while True:
+            with JOBS_LOCK:
+                next_job=next((j for j in sorted(JOBS.values(),key=lambda x:x["created_at"]) if j["status"]=="queued"),None)
+                if not next_job: break
+                job_id=next_job["job_id"]
+                kind=next_job.get("kind","video")
+            if kind=="batch":
+                _run_batch_download(job_id,next_job["source_url"],next_job["source_type"],next_job.get("proxy"))
+            else:
+                _run_download(job_id,next_job["video_id"],next_job.get("proxy"))
+    finally:
+        with QUEUE_LOCK:
+            QUEUE_ACTIVE=False
+            with JOBS_LOCK: queued=any(j["status"]=="queued" for j in JOBS.values())
+            if queued:
+                QUEUE_ACTIVE=True
+                threading.Thread(target=_queue_loop,daemon=True).start()
+
+def _ensure_queue():
+    global QUEUE_ACTIVE
+    with QUEUE_LOCK:
+        if not QUEUE_ACTIVE:
+            QUEUE_ACTIVE=True
+            threading.Thread(target=_queue_loop,daemon=True).start()
+
+def start_batch_download(url: str, source_type: str="playlist", proxy: str | None=None) -> dict:
+    url=_youtube_url(url)
+    if source_type not in {"channel","playlist"}: raise ValueError("Batch type must be channel or playlist.")
+    proxy=_safe_proxy(proxy)
+    job_id=uuid.uuid4().hex[:12]
+    job={"job_id":job_id,"video_id":None,"kind":"batch","source_url":url,"source_type":source_type,"status":"queued","output":[],"progress":0.0,"created_at":time.time(),"process":None,"thumbnail_process":None,"cancel_requested":False,"label":url,"proxy":proxy}
+    with JOBS_LOCK: JOBS[job_id]=job
+    _append_log(job_id,"[queue] Added "+source_type+" download: "+url)
+    _ensure_queue()
+    return {k:v for k,v in job.items() if k not in {"process","thumbnail_process"}}
+
 def start_download(video_id: str, proxy: str | None = None) -> dict:
     video_id = str(video_id).strip()
-    if not ID_RE.fullmatch(video_id):
-        raise ValueError("Invalid YouTube video ID.")
+    if not ID_RE.fullmatch(video_id): raise ValueError("Invalid YouTube video ID.")
     proxy = _safe_proxy(proxy)
     with JOBS_LOCK:
         for job in JOBS.values():
-            if job["video_id"] == video_id and job["status"] in {"queued", "running"}:
-                return {k: v for k, v in job.items() if k not in {"process", "thumbnail_process"}}
-        job_id = uuid.uuid4().hex[:12]
-        job = {
-            "job_id": job_id, "video_id": video_id, "status": "queued",
-            "output": [], "progress": 0.0, "created_at": time.time(), "process": None, "thumbnail_process": None, "cancel_requested": False,
-        }
-        JOBS[job_id] = job
-    thread = threading.Thread(target=_run_download, args=(job_id, video_id, proxy), daemon=True)
-    thread.start()
-    return dict(job)
-
+            if job.get("video_id") == video_id and job["status"] in {"queued", "running"}:
+                return {k:v for k,v in job.items() if k not in {"process","thumbnail_process"}}
+        job_id=uuid.uuid4().hex[:12]
+        job={"job_id":job_id,"video_id":video_id,"kind":"video","status":"queued","output":[],"progress":0.0,"created_at":time.time(),"process":None,"thumbnail_process":None,"cancel_requested":False,"proxy":proxy}
+        JOBS[job_id]=job
+    _append_log(job_id,"[queue] Added video download: "+video_id)
+    _ensure_queue()
+    return {k:v for k,v in job.items() if k not in {"process","thumbnail_process"}
 
 def get_downloads() -> list[dict]:
     with JOBS_LOCK:
