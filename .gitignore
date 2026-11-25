@@ -1,2 +1,4 @@
 web.local.json
 blocked_content.json
+download_queue.json
+download_queue.tmp
