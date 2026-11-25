@@ -95,7 +95,7 @@ function renderSearchView(app){
 
 let channelUrl='',channelName='',channelTab='videos',channelData=null,channelLoading=false,channelError='',channelSearch='';
 let queueExpanded=true;
-function openChannel(url,name){channelUrl=String(url||'');channelName=String(name||'Channel');channelTab='videos';channelData=null;channelSearch='';channelError='';view='channel';render();}
+function openChannel(url,name){channelUrl=String(url||'');channelName=String(name||'Channel');channelTab='videos';channelData=null;channelSearch='';channelError='';view='channel';render();loadChannel('videos');}
 function channelTabUrl(tab){let base=channelUrl.replace(/\/(videos|shorts|streams|playlists|about)\/?$/,'').replace(/\/$/,'');return base+'/'+tab;}
 async function loadChannel(tab=channelTab){
  channelTab=tab;channelLoading=true;channelError='';render();
