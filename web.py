@@ -88,7 +88,7 @@ function renderSearchView(app){
  app.innerHTML=nav+'<h1>YouTube search</h1><div class="sub">Find videos, download them, or block unwanted videos and channels.</div><div class="toolbar search-toolbar"><input id="search-query" type="search" placeholder="Search YouTube..." value="'+esc(searchTerm)+'" onkeydown="if(event.key===\'Enter\')searchVideos()"><input id="search-proxy" type="text" placeholder="Proxy (optional)" value="'+esc(searchProxy)+'" style="max-width:220px"><button onclick="searchVideos()" '+(searchLoading?'disabled':'')+'>'+(searchLoading?'Searching…':'Search')+'</button></div>'+(searchError?'<div class="empty">'+esc(searchError)+'</div>':'')+(searchLoading?'<div class="empty">Searching YouTube…</div>':'')+'<div class="sub">'+(searchResults.length?searchResults.length+' results':'')+'</div><div class="grid">'+(cards||(!searchLoading?'<div class="empty">Enter a search term to find videos.</div>':''))+'</div>';
 }
 async function searchVideos(){
- searchTerm=document.getElementById('search-query')?.value||searchTerm;
+ const queryInput=document.getElementById('search-query');searchTerm=queryInput?queryInput.value:searchTerm;
  searchProxy=document.getElementById('search-proxy')?.value||'';
  if(!searchTerm.trim()){searchError='Enter a search query.';render();return;}
  searchLoading=true;searchError='';render();
