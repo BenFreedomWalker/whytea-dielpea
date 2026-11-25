@@ -158,11 +158,21 @@ window.onpopstate=render;load();window.setInterval(async()=>{await refreshDownlo
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        # Browsers may close a request before the response is written.
+        # Treat that as a normal client disconnect, not a server traceback.
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
     def log_message(self, fmt, *args): print(fmt % args)
     def send_json(self, data, status=200):
         raw=json.dumps(data).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
     def do_GET(self):
         parsed=urlparse(self.path)
+        if parsed.path=='/favicon.ico':
+            self.send_response(204);self.end_headers();return
         if parsed.path in ('/','/watch') or parsed.path.startswith('/watch/'):
             raw=HTML.encode();self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
         if parsed.path=='/api/videos': self.send_json(scan_library_with_thumbnails());return
