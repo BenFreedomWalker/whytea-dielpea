@@ -10,9 +10,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from library import ROOT, delete_video, load_config, scan_library, set_watched
-from web_search import change_block, get_blocks, get_downloads, search_videos, start_download
+from web_search import change_block, fetch_thumbnail, get_blocks, get_downloads, search_videos, start_download
 
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"
 PORT = 8765
 
 HTML = r'''<!doctype html>
@@ -36,14 +36,14 @@ a{color:inherit;text-decoration:none}.card-info{display:flex;align-items:flex-st
 .menu-pop button{display:block;width:100%;text-align:left;border:0;background:transparent;padding:9px 11px;color:#f2aaaa}
 .menu-pop button:hover{background:#3a2929}
 .player{max-width:1000px;margin:auto}.player video{width:100%;max-height:75vh;background:#000}.back{display:inline-block;margin-bottom:14px;color:#aaa}.watch-title{font-size:21px;margin:12px 0 5px}.watch-meta{color:#999;margin-bottom:15px}.actions{display:flex;gap:8px;margin-bottom:25px}
-.search-card{display:flex;gap:12px;min-width:0}.search-thumb{width:180px;aspect-ratio:16/9;object-fit:cover;border-radius:5px;background:#222;flex:none}.search-info{flex:1;min-width:0}.search-info .title{margin:0 0 6px}.search-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.search-toolbar input{background:#202020;color:#eee;border:1px solid #444;padding:9px 10px;border-radius:3px;min-width:150px}.search-toolbar #search-query{flex:1}.status{font-size:12px;color:#aaa;margin-top:7px}.status.running{color:#e7c36b}.status.completed{color:#8bd49b}.status.failed{color:#f29b9b}.blocked-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #333}.blocked-name{min-width:0;overflow-wrap:anywhere}.nav{display:flex;gap:8px;margin:0 0 18px}.nav button.active{background:#454545;border-color:#777}@media(max-width:650px){body{margin-top:18px}.grid{grid-template-columns:1fr}.search-card{gap:9px}.search-thumb{width:125px}}
+.search-results{display:flex;flex-direction:column;gap:22px}.search-card{display:flex;align-items:flex-start;gap:16px;min-width:0;width:100%;padding-bottom:18px;border-bottom:1px solid #292929}.search-thumb-wrap{position:relative;width:360px;max-width:42%;aspect-ratio:16/9;flex:none;overflow:hidden;border-radius:5px;background:#222}.search-thumb{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:cover}.search-info{flex:1;min-width:0}.search-info .title{margin:0 0 8px;font-size:18px}.search-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.search-toolbar input[type="text"],.search-toolbar input[type="search"]{background:#202020;color:#eee;border:1px solid #444;padding:9px 10px;border-radius:3px;min-width:150px}.search-toolbar #search-query{flex:1}.proxy-control{display:flex;align-items:center;gap:7px;color:#bbb;font-size:13px;white-space:nowrap}.proxy-control input{accent-color:#aaa}.status{font-size:12px;color:#aaa;margin-top:7px}.status.running{color:#e7c36b}.status.completed{color:#8bd49b}.status.failed{color:#f29b9b}.blocked-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #333}.blocked-name{min-width:0;overflow-wrap:anywhere}.nav{display:flex;gap:8px;margin:0 0 18px}.nav button.active{background:#454545;border-color:#777}@media(max-width:650px){body{margin-top:18px}.grid{grid-template-columns:1fr}.search-card{gap:10px}.search-thumb-wrap{width:180px;max-width:44%}.search-info .title{font-size:15px}}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <script>
 let videos=[],filter='all',sortBy='downloaded-desc',searchQuery='';
-let view='library',searchResults=[],searchTerm='',searchProxy='',searchLoading=false,searchError='',blocked={videos:[],channels:[]},downloadJobs=[];
+let view='library',searchResults=[],searchTerm='',searchProxy='socks5://127.0.0.1:10808',proxyEnabled=true,searchLoading=false,searchError='',blocked={videos:[],channels:[]},downloadJobs=[];
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function videoUrl(v){return '/video/'+encodeURIComponent(v.path);}
 function thumbUrl(v){return v.thumbnail?'/thumb/'+encodeURIComponent(v.thumbnail):null;}
@@ -82,14 +82,17 @@ function render(){
 }
 function searchMenu(v){return '<details class="menu"><summary aria-label="Video options" title="More options">⋮</summary><div class="menu-pop"><button onclick="startDownload(\''+esc(v.id)+'\')">Download</button><button onclick="blockItem(\'video\',\''+esc(v.id)+'\',decodeURIComponent(\''+encodeURIComponent(v.title||'')+'\'))">Block video</button>'+(v.channel_id?'<button onclick="blockItem(\'channel\',\''+esc(v.channel_id)+'\',decodeURIComponent(\''+encodeURIComponent(v.channel||'')+'\'))">Block channel</button>':'')+'</div></details>'; }
 function jobFor(id){return downloadJobs.find(x=>x.video_id===id);}
+function searchProxyEnabled(){return proxyEnabled;}
 function renderSearchView(app){
  const nav='<div class="nav"><button onclick="view=\'library\';render()">Library</button><button class="active" onclick="view=\'search\';render()">Search YouTube</button><button onclick="showBlocked()">Blocked content</button></div>';
- const cards=searchResults.map(v=>{const job=jobFor(v.id);const thumb=v.thumbnail&&/^https:\/\//i.test(v.thumbnail)?'<img class="search-thumb" src="'+esc(v.thumbnail)+'" loading="lazy" alt="">':'<div class="search-thumb"></div>';return '<article class="search-card">'+thumb+'<div class="search-info"><div class="title">'+esc(v.title)+'</div><div class="channel">'+esc(v.channel)+'</div><div class="date">'+(v.duration?esc(duration(v.duration))+' · ':'')+esc(views(v.view_count))+'</div>'+(job?'<div class="status '+esc(job.status)+'">Download: '+esc(job.status)+(job.error?' — '+esc(job.error):'')+'</div>':'')+'<div class="search-actions"><button onclick="startDownload(\''+esc(v.id)+'\')">Download</button><a href="'+esc(v.url)+'" target="_blank" rel="noopener noreferrer"><button>Open YouTube</button></a></div></div>'+searchMenu(v)+'</article>';}).join('');
- app.innerHTML=nav+'<h1>YouTube search</h1><div class="sub">Find videos, download them, or block unwanted videos and channels.</div><div class="toolbar search-toolbar"><input id="search-query" type="search" placeholder="Search YouTube..." value="'+esc(searchTerm)+'" onkeydown="if(event.key===\'Enter\')searchVideos()"><input id="search-proxy" type="text" placeholder="Proxy (optional)" value="'+esc(searchProxy)+'" style="max-width:220px"><button onclick="searchVideos()" '+(searchLoading?'disabled':'')+'>'+(searchLoading?'Searching…':'Search')+'</button></div>'+(searchError?'<div class="empty">'+esc(searchError)+'</div>':'')+(searchLoading?'<div class="empty">Searching YouTube…</div>':'')+'<div class="sub">'+(searchResults.length?searchResults.length+' results':'')+'</div><div class="grid">'+(cards||(!searchLoading?'<div class="empty">Enter a search term to find videos.</div>':''))+'</div>';
+ const cards=searchResults.map(v=>{const job=jobFor(v.id);const thumb='<div class="search-thumb-wrap"><img class="search-thumb" src="/ytthumb/'+encodeURIComponent(v.id)+'?proxy='+encodeURIComponent(searchProxyEnabled()?searchProxy:'')+'" loading="lazy" decoding="async" alt="" onerror="this.style.display=\'none\'"></div>';return '<article class="search-card">'+thumb+'<div class="search-info"><div class="title">'+esc(v.title)+'</div><div class="channel">'+esc(v.channel)+'</div><div class="date">'+(v.duration?esc(duration(v.duration))+' · ':'')+esc(views(v.view_count))+'</div>'+(job?'<div class="status '+esc(job.status)+'">Download: '+esc(job.status)+(job.error?' — '+esc(job.error):'')+'</div>':'')+'<div class="search-actions"><button onclick="startDownload(\''+esc(v.id)+'\')">Download</button><a href="'+esc(v.url)+'" target="_blank" rel="noopener noreferrer"><button>Open YouTube</button></a></div></div>'+searchMenu(v)+'</article>';}).join('');
+
+ app.innerHTML=nav+'<h1>YouTube search</h1><div class="sub">Find videos, download them, or block unwanted videos and channels.</div><div class="toolbar search-toolbar"><input id="search-query" type="search" placeholder="Search YouTube..." value="'+esc(searchTerm)+'" onkeydown="if(event.key===\'Enter\')searchVideos()"><label class="proxy-control"><input id="proxy-enabled" type="checkbox" '+(proxyEnabled?'checked':'')+' onchange="proxyEnabled=this.checked;render()"> Use proxy</label><input id="search-proxy" type="text" placeholder="SOCKS5 proxy" value="'+esc(searchProxy)+'" '+(proxyEnabled?'':'disabled')+' style="max-width:220px"><button onclick="searchVideos()" '+(searchLoading?'disabled':'')+'>'+(searchLoading?'Searching…':'Search')+'</button></div>'+(searchError?'<div class="empty">'+esc(searchError)+'</div>':'')+(searchLoading?'<div class="empty">Searching YouTube…</div>':'')+'<div class="sub">'+(searchResults.length?searchResults.length+' results':'')+'</div><div class="search-results">'+(cards||(!searchLoading?'<div class="empty">Enter a search term to find videos.</div>':''))+'</div>';
 }
 async function searchVideos(){
  const queryInput=document.getElementById('search-query');searchTerm=queryInput?queryInput.value:searchTerm;
- searchProxy=document.getElementById('search-proxy')?.value||'';
+ const proxyInput=document.getElementById('search-proxy');if(proxyInput)searchProxy=proxyInput.value.trim();
+ const proxyToggle=document.getElementById('proxy-enabled');if(proxyToggle)proxyEnabled=proxyToggle.checked;
  if(!searchTerm.trim()){searchError='Enter a search query.';render();return;}
  searchLoading=true;searchError='';render();
  try{
@@ -121,7 +124,7 @@ async function unblockItem(kind,id){
 }
 async function startDownload(id){
  try{
-  const response=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,proxy:searchProxy})});
+  const response=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,proxy:searchProxyEnabled()?searchProxy:''})});
   const data=await response.json();if(!response.ok)throw new Error(data.error||'Could not start download.');
   await refreshDownloads();render();
  }catch(error){alert(error.message);}
@@ -165,6 +168,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path=='/api/videos': self.send_json(scan_library_with_thumbnails());return
         if parsed.path=='/api/blocks': self.send_json(get_blocks());return
         if parsed.path=='/api/downloads': self.send_json(get_downloads());return
+        if parsed.path.startswith('/ytthumb/'):
+            video_id=unquote(parsed.path[len('/ytthumb/'):]);params=parse_qs(parsed.query);proxy=params.get('proxy',[''])[0]
+            try:
+                image_data,content_type=fetch_thumbnail(video_id,proxy)
+                self.send_response(200);self.send_header('Content-Type',content_type);self.send_header('Content-Length',str(len(image_data)));self.send_header('Cache-Control','public, max-age=86400');self.end_headers();self.wfile.write(image_data)
+            except Exception:
+                self.send_error(404)
+            return
         if parsed.path=='/api/search':
             params=parse_qs(parsed.query);query=params.get('q',[''])[0];proxy=params.get('proxy',[''])[0]
             try:self.send_json({'results':search_videos(query,20,proxy)})
